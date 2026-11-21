@@ -98,6 +98,8 @@ RUBBLE_REEF_FLAT_ZONES = {"Inner Reef Flat", "Outer Reef Flat", "Reef Crest", "S
 # Keys = species_id, values = dict with optional tide_phase, moon_phase, pressure, temp_range, bait conditions.
 # Loaded from RAG at init when available; empty dict = no trigger data yet.
 FEEDING_TRIGGERS_PATH = f"{W}/shared_refs/RAG/sources/extracted_2026-11-14/species_feeding_triggers.csv"
+OCEAN_GRID_PATH = f"{W}/reef-app/feeds/cache/ocean_grids/ocean_layers_grid.json"
+OCEAN_FRONTS_PATH = f"{W}/reef-app/feeds/cache/ocean_grids/ocean_fronts.geojson"
 
 
 def load_closures():
@@ -269,6 +271,7 @@ class Engine:
         for k in (("depth", "depth_msl"), ("depth", "depth_measured_flag"), ("depth", "gbr30_fallback"), ("habitat", "habitat_reef_zones")): use(R(*k))
         self.species = load_species(); use(f"{W}/marine_db_v5/13_Species/species_reef_demersal_v5.csv"); use(f"{W}/marine_db_v5/14_Pelagic/species_pelagic_v5.csv"); use(PROFILES_PY)
         self.feeding_triggers = self._load_feeding_triggers()
+        self.ocean = self._load_ocean_layers()
         self.cur = make_current(json.load(open(R("current", "current_harmonics")))); use(R("current", "current_harmonics"))
         PP = json.load(open(R("current", "pressure_points"))); use(R("current", "pressure_points"))
         self.pp = []
@@ -471,6 +474,96 @@ class Engine:
             pass  # TODO: match moon_phase against current lunar phase for `day`
         return bonus, why
 
+    @staticmethod
+    def _load_ocean_layers():
+        """Load ocean grid (SST, chlorophyll, upwelling proxy, fronts) for pelagic scoring. Returns dict or {}."""
+        out = {}
+        try:
+            if os.path.exists(OCEAN_GRID_PATH):
+                og = json.load(open(OCEAN_GRID_PATH))
+                out["grid"] = og
+                out["built_at"] = og.get("built_at")
+                out["sst"] = og.get("ocean_sst", {})
+                out["sst_anom"] = og.get("ocean_sst_anom_clim", {})
+                out["sst_front_grad"] = og.get("ocean_sst_front_grad", {})
+                out["chl"] = og.get("ocean_chl", {})
+                out["chl_edge"] = og.get("ocean_chl_edge_grad", {})
+                out["upwelling"] = og.get("ocean_upwelling_proxy", {})
+        except Exception:
+            pass
+        try:
+            if os.path.exists(OCEAN_FRONTS_PATH):
+                out["fronts"] = json.load(open(OCEAN_FRONTS_PATH))
+        except Exception:
+            pass
+        return out
+
+    def ocean_score(self, lon, lat):
+        """Score pelagic water features at a point. Returns (bonus, reasons).
+        Uses SST gradients (temperature breaks), chlorophyll edges (colour lines), and upwelling proxy."""
+        if not self.ocean:
+            return 0.0, ["ocean layers not loaded"]
+        bonus, why = 0.0, []
+        grid = self.ocean.get("grid", {})
+        bbox = grid.get("bbox")
+        if not bbox:
+            return 0.0, ["ocean grid has no bbox"]
+        res = grid.get("resolution_deg", 0.01)
+        if not (bbox[1] <= lat <= bbox[3] and bbox[0] <= lon <= bbox[2]):
+            return 0.0, ["outside ocean grid coverage"]
+        col = int((lon - bbox[0]) / res)
+        row = int((bbox[3] - lat) / res)
+        nx = grid.get("nx", int((bbox[2] - bbox[0]) / res) + 1)
+
+        def val(layer_key):
+            layer = self.ocean.get(layer_key, {})
+            data = layer.get("data") or layer.get("values")
+            if not data:
+                return None
+            idx = row * nx + col
+            if 0 <= idx < len(data):
+                v = data[idx]
+                return v if v is not None and np.isfinite(v) else None
+            return None
+
+        sst_grad = val("sst_front_grad")
+        if sst_grad is not None:
+            if sst_grad > 0.5:
+                bonus += 0.2
+                why.append(f"strong SST break ({sst_grad:.2f} C/km) - temperature front")
+            elif sst_grad > 0.2:
+                bonus += 0.1
+                why.append(f"moderate SST gradient ({sst_grad:.2f} C/km)")
+
+        chl_edge = val("chl_edge")
+        if chl_edge is not None:
+            if chl_edge > 0.3:
+                bonus += 0.2
+                why.append(f"strong colour line ({chl_edge:.2f} chl gradient) - blue/green edge")
+            elif chl_edge > 0.1:
+                bonus += 0.1
+                why.append(f"moderate chlorophyll edge ({chl_edge:.2f})")
+
+        upwell = val("upwelling")
+        if upwell is not None:
+            if upwell > 0.5:
+                bonus += 0.15
+                why.append(f"upwelling signal ({upwell:.2f}) - cold nutrient-rich water")
+            elif upwell > 0.2:
+                bonus += 0.05
+                why.append(f"weak upwelling signal ({upwell:.2f})")
+
+        sst = val("sst")
+        if sst is not None:
+            why.append(f"SST {sst:.1f} C")
+
+        if self.ocean.get("built_at"):
+            why.append(f"ocean data: {self.ocean['built_at']}")
+        elif not why:
+            why.append("ocean layer data not available at this location")
+
+        return round(bonus, 3), why
+
     def _current_at(self, sp, c, day, hours=None, current_override=None):
         """Shared: resolve RECOM current for a candidate. Returns (current_window, current_kn, current_factor, reasons)."""
         lon, lat = c["lon"], c["lat"]
@@ -568,9 +661,10 @@ class Engine:
         # current is key for pelagics
         cw, ckn, cf, cw_why = self._current_at(sp, c, day, hours, current_override)
         why.extend(cw_why)
-        # TODO: SST break scoring (needs satellite SST data layer)
-        # TODO: chlorophyll / colour-line scoring (needs ocean colour data layer)
-        # TODO: upwelling detection scoring (needs wind + SST gradient layer)
+        # water feature scoring: SST breaks, colour lines, upwellings
+        ob, owhy = self.ocean_score(c["lon"], c["lat"])
+        bonus += ob
+        why.extend(owhy)
         zf = 1.0
         s = (1.0 * sf * cf * zf + bonus) * sp["season"]
         cl = closed_on(sp["id"], day)
@@ -676,6 +770,50 @@ class Engine:
             if len(pick) == top: break
         self.last_answer = self.answer_sources(sid, sc, pick, day, top)  # G12: every answer lists held-but-unused
         return sc, pick
+
+
+    def plain_mark(self, sp, c, score, why, det):
+        """Plain-language mark output with coordinates (delivery plan step 3).
+        E.g. 'There's a lump that matches the engine requirements. Likely coral trout / red emperor.
+        It matches the depths and the criteria. Here's a mark.'"""
+        dl = c["depth_lat_m"]
+        place = self.place(c["x"], c["y"])
+        feature = c["label"]
+        name = sp["name"]
+        lat_s = f"{abs(c['lat']):.5f} S" if c["lat"] < 0 else f"{c['lat']:.5f} N"
+        lon_s = f"{c['lon']:.5f} E"
+
+        if det.get("species_type") == "pelagic":
+            water_features = [w for w in why if any(k in w.lower() for k in ("sst", "colour", "chlorophyll", "upwelling", "front", "current", "tide run"))]
+            water_desc = "; ".join(water_features[:3]) if water_features else "water features present"
+            line = (f"Water feature mark at {place}. {water_desc}. "
+                    f"Likely {name} area. GPS: {lat_s}, {lon_s}.")
+        elif det.get("species_type") == "ambush":
+            current_info = [w for w in why if "tide run" in w.lower() or "pressure point" in w.lower() or "AMBUSH" in w]
+            cur_desc = "; ".join(current_info[:2]) if current_info else "current pushing onto structure"
+            line = (f"Ambush point at {place}. {cur_desc}. "
+                    f"Likely {name} holding here on the tide. GPS: {lat_s}, {lon_s}.")
+        else:
+            sweet = "in the sweet spot" if det.get("sweet") else "in the depth band"
+            deep_note = " (DEEP: 120-150 m)" if det.get("deep") else ""
+            line = (f"There's a {feature} at {place} that matches the engine requirements. "
+                    f"Likely {name} in there. {dl} m LAT {sweet}{deep_note}, "
+                    f"structure fits the criteria. Here's a mark: {lat_s}, {lon_s}.")
+        return line
+
+    def rank_with_marks(self, sid, cands, day, top=3, min_sep_m=500, hours=None):
+        """Rank candidates and produce plain-language mark descriptions."""
+        sc, pick = self.rank(sid, cands, day, top=top, min_sep_m=min_sep_m, hours=hours)
+        sp = self.species[sid]
+        marks = []
+        for s, c, why, det in pick:
+            marks.append(dict(
+                score=s, lat=c["lat"], lon=c["lon"],
+                depth_lat_m=c["depth_lat_m"], feature=c["label"],
+                plain=self.plain_mark(sp, c, s, why, det),
+                reasons=why, details=det
+            ))
+        return marks, sc, pick
 
 
 def species_type(sid):
