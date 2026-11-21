@@ -8,7 +8,7 @@ Built from: carry-over audit (26 must-carry), features register (87 items, 20 LO
 |------|---------|-------------|
 | YES | (a) Remove 300m bonus | `evidence()` deleted, `marks300` bonus removed from `score()`, Mick's marks moved to held-not-used |
 | YES | (b) Depth auto-convert | `msl_to_lat()` and `lat_to_msl()` functions added, used in `depth_at()` |
-| YES | (c) Rubble rule + feeding triggers | `RUBBLE_RULES` with species-specific ranges, shallow reef-flat drop, `_load_feeding_triggers()` scaffold |
+| YES | (c) Rubble rule + feeding triggers | `RUBBLE_RULES` with species-specific ranges, shallow reef-flat drop, `_load_feeding_triggers()`, `feeding_bonus()` with tide phase + moon phase matching |
 | YES | (d) Three engines | `score_demersal()`, `score_pelagic()`, `score_ambush()` with dispatcher `score()` |
 | YES | (d+) Ocean layer scoring | `ocean_score()` method reads SST gradients, chlorophyll edges, upwelling proxy for pelagic scoring |
 | YES | (d+) Plain-language marks | `plain_mark()` and `rank_with_marks()` methods output marks as natural English with GPS |

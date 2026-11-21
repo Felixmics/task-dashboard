@@ -460,7 +460,45 @@ class Engine:
         except Exception:
             return {}
 
-    def feeding_bonus(self, sp, day, hour):
+    def _tide_phase_at(self, lon, lat, day, hour):
+        """Determine tide phase at a location/time by comparing RECOM current speed at adjacent hours.
+        Returns 'run-in' (increasing), 'run-out' (decreasing), 'change' (at min/max), or None."""
+        prev_h = (hour - 1) % 24
+        next_h = (hour + 1) % 24
+        c_now = self.cur(lon, lat, day, hour * 60)
+        c_prev = self.cur(lon, lat, day, prev_h * 60)
+        c_next = self.cur(lon, lat, day, next_h * 60)
+        if not c_now:
+            return None
+        kn_now = c_now["kn"]
+        kn_prev = c_prev["kn"] if c_prev else kn_now
+        kn_next = c_next["kn"] if c_next else kn_now
+        if kn_now >= kn_prev and kn_now >= kn_next:
+            return "change"
+        if kn_now <= kn_prev and kn_now <= kn_next:
+            return "change"
+        if kn_now > kn_prev:
+            return "run-in"
+        return "run-out"
+
+    @staticmethod
+    def _moon_phase(day):
+        """Approximate moon phase from date string 'YYYY-MM-DD'. Returns one of: new, waxing_crescent,
+        first_quarter, waxing_gibbous, full, waning_gibbous, last_quarter, waning_crescent."""
+        d = dt.date.fromisoformat(str(day))
+        ref = dt.date(2000, 1, 6)  # known new moon
+        days_since = (d - ref).days
+        cycle = days_since % 29.53059
+        if cycle < 1.85: return "new"
+        if cycle < 7.38: return "waxing_crescent"
+        if cycle < 9.23: return "first_quarter"
+        if cycle < 14.77: return "waxing_gibbous"
+        if cycle < 16.61: return "full"
+        if cycle < 22.15: return "waning_gibbous"
+        if cycle < 24.0: return "last_quarter"
+        return "waning_crescent"
+
+    def feeding_bonus(self, sp, c, day, hour):
         """Score bonus from species feeding triggers (tide change, moon phase, pressure, temperature). Returns (bonus, reasons)."""
         ft = self.feeding_triggers.get(sp["id"])
         if not ft:
@@ -468,10 +506,19 @@ class Engine:
         bonus, why = 0.0, []
         tide_phase = ft.get("tide_phase")
         if tide_phase and hour is not None:
-            pass  # TODO: match tide_phase (e.g. "run-in", "run-out", "change") against RECOM tide state at this hour
+            actual_phase = self._tide_phase_at(c["lon"], c["lat"], day, hour)
+            if actual_phase:
+                wanted = [p.strip().lower() for p in str(tide_phase).split(",")]
+                if actual_phase in wanted:
+                    bonus += 0.1
+                    why.append(f"feeding trigger: tide {actual_phase} matches {sp['name']} preference")
         moon = ft.get("moon_phase")
         if moon:
-            pass  # TODO: match moon_phase against current lunar phase for `day`
+            actual_moon = self._moon_phase(day)
+            wanted_moon = [p.strip().lower().replace(" ", "_") for p in str(moon).split(",")]
+            if actual_moon in wanted_moon:
+                bonus += 0.1
+                why.append(f"feeding trigger: moon {actual_moon.replace('_', ' ')} matches {sp['name']} preference")
         return bonus, why
 
     @staticmethod
@@ -636,6 +683,8 @@ class Engine:
             zf *= 0.5
         if c["label"] == "Wonky hole target":
             why.append("SKIPPER ALERT: " + WONKY_ALERT)
+        fb, fw = self.feeding_bonus(sp, c, day, cw[1] if cw else None)
+        bonus += fb; why.extend(fw)
         s = (df * sf * cf * zf + bonus) * sp["season"]
         cl = closed_on(sp["id"], day)
         if cl: why.append(closed_label(cl))
@@ -665,6 +714,8 @@ class Engine:
         ob, owhy = self.ocean_score(c["lon"], c["lat"])
         bonus += ob
         why.extend(owhy)
+        fb, fw = self.feeding_bonus(sp, c, day, cw[1] if cw else None)
+        bonus += fb; why.extend(fw)
         zf = 1.0
         s = (1.0 * sf * cf * zf + bonus) * sp["season"]
         cl = closed_on(sp["id"], day)
@@ -706,6 +757,8 @@ class Engine:
             why.append(f"geomorphic zone: {geo}")
             if geo in ("Reef Slope", "Sheltered Reef Slope", "Reef Crest", "Back Reef Slope"):
                 bonus += 0.1; why.append("reef face/slope (ambush position)")
+        fb, fw = self.feeding_bonus(sp, c, day, cw[1] if cw else None)
+        bonus += fb; why.extend(fw)
         s = (cf + bonus) * sp.get("season", 1.0)
         cl = closed_on(sp["id"], day)
         if cl: why.append(closed_label(cl))
