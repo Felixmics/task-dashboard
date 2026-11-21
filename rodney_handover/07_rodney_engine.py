@@ -471,54 +471,8 @@ class Engine:
             pass  # TODO: match moon_phase against current lunar phase for `day`
         return bonus, why
 
-    def score(self, sp, c, day, hours=None, current_override=None):
-        """Point-first score for one species at one candidate. Returns (score, reasons, details) or (0, ...) if out of band."""
-        core, ext = sp["core"], sp["ext"]; dl = c["depth_lat_m"]
-        if dl > CUTOFF_LAT_M:
-            return 0.0, ["deeper than 150 m LAT - dropped"], {}
-        if sp["group"] == "PELAGIC":  # Mick 21 Nov 2026 7:32 pm: pelagics are judged on water features, never on depth
-            sweet = False; df = 1.0
-            why = [f"{dl} m LAT ({c['depth_tag']}) - {PELAGIC_NOTE}"]
-        else:  # demersal: depth sweet spot and band apply
-            sweet = core[0] <= dl <= core[1]
-            df = 1.0 if sweet else (0.5 if ext[0] <= dl <= ext[1] else 0.0)
-            if df == 0:
-                return 0.0, [f"{dl} m LAT outside {sp['name']} band {ext[0]:g}-{ext[1]:g} m"], {}
-            why = [f"{dl} m LAT ({c['depth_tag']}) " + (f"in the sweet spot {core[0]:g}-{core[1]:g} m" if sweet else
-                   f"OUTSIDE the sweet spot {core[0]:g}-{core[1]:g} m (band {ext[0]:g}-{ext[1]:g} m)" + (f" - {SHARK_NOTE}" if (sp["id"] == "DE03" and dl > core[1]) else ""))]
-        if is_deep(dl):
-            why.append("DEEP: 120-150 m LAT")
-        if c.get("zone_rule") == BUFFER_RULE:
-            if sp["group"] != "PELAGIC":
-                return 0.0, [f"{BUFFER_RULE} - no bottom fishing for {sp['name']}"], {}
-            why.append(BUFFER_RULE)
-        # rubble search rule (Mick, 5 Nov 2026): drop shallow reef-flat rubble; species-specific rubble depth limits
-        is_rubble = "rubble" in c["bottom"]
-        if is_rubble:
-            geo = self.zone_at(c["x"], c["y"])
-            if geo in RUBBLE_REEF_FLAT_ZONES and dl < RUBBLE_SHALLOW_CUTOFF:
-                return 0.0, [f"shallow reef-flat rubble dropped ({dl} m LAT, {geo})"], {}
-            if sp["id"] in RUBBLE_RULES:
-                rr = RUBBLE_RULES[sp["id"]]
-                if rr is None:
-                    return 0.0, [f"rubble skipped for {sp['name']} (no rubble depth range set yet)"], {}
-                if not (rr[0] <= dl <= rr[1]):
-                    return 0.0, [f"rubble outside {sp['name']} rubble range {rr[0]}-{rr[1]} m ({dl} m LAT)"], {}
-        # structure fit
-        if sp["group"] == "DEMERSAL":
-            b = (sp["bottom"] or set()) & c["bottom"]; z = sp["zones"] & c["zones"]
-            sf = 1.0 if (b and z) else (0.8 if (b or z) else 0.5)
-            if c["bottom"] == {"sand"} and not sp["sand_ok"]: sf = 0.4
-        else:
-            z = sp["zones"] & c["zones"]; b = set()
-            sf = 1.0 if z else 0.5
-        why.append(f"structure: {c['label']}" + (f" (matches {', '.join(sorted(b | z))})" if (b or z) else " (weak match)"))
-        bonus = 0.0
-        if sp["id"] in c["hab_species"]:
-            bonus += 0.15; why.append("species habitat point (10-31 habitat file)")
-        if sp["name"].split(" (")[0].lower() in c["species_txt"].lower():
-            bonus += 0.05
-        # current in the bite window (RECOM tide-driven current only)
+    def _current_at(self, sp, c, day, hours=None, current_override=None):
+        """Shared: resolve RECOM current for a candidate. Returns (current_window, current_kn, current_factor, reasons)."""
         lon, lat = c["lon"], c["lat"]
         if current_override is not None:
             cw = current_override
@@ -530,8 +484,49 @@ class Engine:
             cw = self._cw[key]
         ckn = cw[0]["kn"] if cw else 0.0
         cf = 0.6 + 0.4 * min(ckn / 0.4, 1)
+        why = []
         if cw: why.append(f"tide run {ckn:.2f} kn toward {card(cw[0]['dir_to'])} at {cw[1]:02d}:00 (RECOM model)")
-        # pressure point
+        return cw, ckn, cf, why
+
+    def score_demersal(self, sp, c, day, hours=None, current_override=None):
+        """Demersal engine: depth sweet spot first, then structure, current and season."""
+        core, ext = sp["core"], sp["ext"]; dl = c["depth_lat_m"]
+        if dl > CUTOFF_LAT_M:
+            return 0.0, ["deeper than 150 m LAT - dropped"], {}
+        sweet = core[0] <= dl <= core[1]
+        df = 1.0 if sweet else (0.5 if ext[0] <= dl <= ext[1] else 0.0)
+        if df == 0:
+            return 0.0, [f"{dl} m LAT outside {sp['name']} band {ext[0]:g}-{ext[1]:g} m"], {}
+        why = [f"{dl} m LAT ({c['depth_tag']}) " + (f"in the sweet spot {core[0]:g}-{core[1]:g} m" if sweet else
+               f"OUTSIDE the sweet spot {core[0]:g}-{core[1]:g} m (band {ext[0]:g}-{ext[1]:g} m)" + (f" - {SHARK_NOTE}" if (sp["id"] == "DE03" and dl > core[1]) else ""))]
+        if is_deep(dl):
+            why.append("DEEP: 120-150 m LAT")
+        if c.get("zone_rule") == BUFFER_RULE:
+            return 0.0, [f"{BUFFER_RULE} - no bottom fishing for {sp['name']}"], {}
+        # rubble search rule
+        if "rubble" in c["bottom"]:
+            geo = self.zone_at(c["x"], c["y"])
+            if geo in RUBBLE_REEF_FLAT_ZONES and dl < RUBBLE_SHALLOW_CUTOFF:
+                return 0.0, [f"shallow reef-flat rubble dropped ({dl} m LAT, {geo})"], {}
+            if sp["id"] in RUBBLE_RULES:
+                rr = RUBBLE_RULES[sp["id"]]
+                if rr is None:
+                    return 0.0, [f"rubble skipped for {sp['name']} (no rubble depth range set yet)"], {}
+                if not (rr[0] <= dl <= rr[1]):
+                    return 0.0, [f"rubble outside {sp['name']} rubble range {rr[0]}-{rr[1]} m ({dl} m LAT)"], {}
+        # structure fit
+        b = (sp["bottom"] or set()) & c["bottom"]; z = sp["zones"] & c["zones"]
+        sf = 1.0 if (b and z) else (0.8 if (b or z) else 0.5)
+        if c["bottom"] == {"sand"} and not sp["sand_ok"]: sf = 0.4
+        why.append(f"structure: {c['label']}" + (f" (matches {', '.join(sorted(b | z))})" if (b or z) else " (weak match)"))
+        bonus = 0.0
+        if sp["id"] in c["hab_species"]:
+            bonus += 0.15; why.append("species habitat point (10-31 habitat file)")
+        if sp["name"].split(" (")[0].lower() in c["species_txt"].lower():
+            bonus += 0.05
+        cw, ckn, cf, cw_why = self._current_at(sp, c, day, hours, current_override)
+        why.extend(cw_why)
+        # pressure point proximity
         if c["kind"] == "pressure_point":
             dday = c["pp"]["days"].get(day)
             if dday:
@@ -551,7 +546,84 @@ class Engine:
         s = (df * sf * cf * zf + bonus) * sp["season"]
         cl = closed_on(sp["id"], day)
         if cl: why.append(closed_label(cl))
-        return round(s, 3), why, dict(current=cw, closed=cl, sweet=sweet, species_type=("pelagic" if sp["group"] == "PELAGIC" else "demersal"), deep=is_deep(dl))
+        return round(s, 3), why, dict(current=cw, closed=cl, sweet=sweet, species_type="demersal", deep=is_deep(dl))
+
+    def score_pelagic(self, sp, c, day, hours=None, current_override=None):
+        """Pelagic engine: judged on water features (colour lines, SST breaks, upwellings, eddies), not depth."""
+        dl = c["depth_lat_m"]
+        if dl > CUTOFF_LAT_M:
+            return 0.0, ["deeper than 150 m LAT - dropped"], {}
+        why = [f"{dl} m LAT ({c['depth_tag']}) - {PELAGIC_NOTE}"]
+        if c.get("zone_rule") == BUFFER_RULE:
+            why.append(BUFFER_RULE)
+        # pelagic structure: fronts, outer zones, FADs, current points
+        z = sp["zones"] & c["zones"]; b = set()
+        sf = 1.0 if z else 0.5
+        why.append(f"structure: {c['label']}" + (f" (matches {', '.join(sorted(z))})" if z else " (weak match)"))
+        bonus = 0.0
+        if sp["id"] in c["hab_species"]:
+            bonus += 0.15; why.append("species habitat point (10-31 habitat file)")
+        if sp["name"].split(" (")[0].lower() in c["species_txt"].lower():
+            bonus += 0.05
+        # current is key for pelagics
+        cw, ckn, cf, cw_why = self._current_at(sp, c, day, hours, current_override)
+        why.extend(cw_why)
+        # TODO: SST break scoring (needs satellite SST data layer)
+        # TODO: chlorophyll / colour-line scoring (needs ocean colour data layer)
+        # TODO: upwelling detection scoring (needs wind + SST gradient layer)
+        zf = 1.0
+        s = (1.0 * sf * cf * zf + bonus) * sp["season"]
+        cl = closed_on(sp["id"], day)
+        if cl: why.append(closed_label(cl))
+        return round(s, 3), why, dict(current=cw, closed=cl, sweet=False, species_type="pelagic", deep=is_deep(dl))
+
+    def score_ambush(self, sp, c, day, hours=None, current_override=None):
+        """Ambush Points engine: hourly tide/current on reef faces, corners, lee eddies."""
+        dl = c["depth_lat_m"]
+        if dl > CUTOFF_LAT_M:
+            return 0.0, ["deeper than 150 m LAT - dropped"], {}
+        why = [f"{dl} m LAT ({c['depth_tag']})"]
+        if c.get("zone_rule") == BUFFER_RULE:
+            if sp["group"] != "PELAGIC":
+                return 0.0, [f"{BUFFER_RULE} - no bottom fishing for {sp['name']}"], {}
+            why.append(BUFFER_RULE)
+        # ambush points are all about current timing
+        cw, ckn, cf, cw_why = self._current_at(sp, c, day, hours, current_override)
+        why.extend(cw_why)
+        # pressure point scoring is the core of the ambush engine
+        bonus = 0.0
+        if c["kind"] == "pressure_point":
+            dday = c["pp"]["days"].get(day)
+            if dday:
+                bonus += 0.25 / max(1, dday["rank"]) ** 0.2
+                why.append(f"AMBUSH: pressure point rank {dday['rank']} on {day}, peak {dday['peak_kn']} kn at {dday['peak_time_aest']}")
+                if dday.get("phase"):
+                    why.append(f"tide phase: {dday['phase']}")
+            else:
+                why.append("pressure point (no data for this day)")
+        else:
+            if "_near" not in c: c["_near"] = min(self.pp, key=lambda q: (q["xy"][0] - c["x"]) ** 2 + (q["xy"][1] - c["y"]) ** 2) if self.pp else None
+            near = c["_near"]
+            if near and math.dist(near["xy"], (c["x"], c["y"])) < 1000:
+                bonus += 0.15; why.append(f"within 1 km of pressure point {near['props']['id']} (ambush zone)")
+        # reef face / corner / lee eddy classification
+        geo = self.zone_at(c["x"], c["y"])
+        if geo:
+            why.append(f"geomorphic zone: {geo}")
+            if geo in ("Reef Slope", "Sheltered Reef Slope", "Reef Crest", "Back Reef Slope"):
+                bonus += 0.1; why.append("reef face/slope (ambush position)")
+        s = (cf + bonus) * sp.get("season", 1.0)
+        cl = closed_on(sp["id"], day)
+        if cl: why.append(closed_label(cl))
+        return round(s, 3), why, dict(current=cw, closed=cl, sweet=False, species_type="ambush", deep=is_deep(dl))
+
+    def score(self, sp, c, day, hours=None, current_override=None):
+        """Dispatch to the right engine. Returns (score, reasons, details)."""
+        if c["kind"] == "pressure_point":
+            return self.score_ambush(sp, c, day, hours, current_override)
+        if sp["group"] == "PELAGIC":
+            return self.score_pelagic(sp, c, day, hours, current_override)
+        return self.score_demersal(sp, c, day, hours, current_override)
 
     def answer_sources(self, sid, sc, pick, day=None, top=3):
         """G12 (Mick, 21 Nov 2026 6:37 pm: "Yes, add the held-but-unused list (G12) to the engine").
