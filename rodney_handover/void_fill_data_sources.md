@@ -69,6 +69,60 @@ These don't fill depth voids but fill the PELAGIC scoring layers (SST, chlorophy
 | **Copernicus OCEANCOLOUR_GLO_BGC_L3** | Chlorophyll-a (satellite) | ~4 km | data.marine.copernicus.eu | Satellite ocean colour — observed chl-a, sharper than model, good for colour breaks |
 | **eReefs (AIMS)** | Currents, temp, chl, sediment, nutrients | ~1 km (GBR4) ~4 km | ereefs.aims.gov.au | GBR-SPECIFIC hydrodynamic + biogeochemical model. Best available for reef-scale currents and water quality. Daily output |
 
+## Skill-sourced additions (Claude skills library, 2026-11-21)
+
+Sources extracted from 8 loaded GBR-specific skills. These skills are older reference material — endpoints, datum values, and workflow details may be outdated. Treat as leads to investigate, not hard rules.
+
+### Bathymetry — specific products and endpoints
+
+| Dataset | Res | Endpoint / Record | Skill source | What it fills |
+|---------|-----|-------------------|-------------|---------------|
+| **AusSeabed WCS (GBR 30m numeric)** | 30 m | `warehouse.ausseabed.gov.au/geoserver/ows` — WCS 2.0.1, coverage IDs: `ausseabed__AusBathyTopo__Great_Barrier_Reef__Bathymetry_B_30m_2017_OV` (tile B, 16–23S) and `_A_` (10–17S). Float32 elevation, negative=depth, nodata -9999. SCALEFACTOR=0.1 gives ~0.003° grid (~4.6 MB corridor clip). CC BY 4.0 | upwellings | Direct WCS download of GBR30 corridor subset — avoids the 3.5 GB zip. Use `_OV` suffix (numeric); `_HS` is hillshade (uint8), not data |
+| **Port Douglas–Fitzroy 16 m MSL 2020** | 16 m | GA record 149720 | when-where-why-marks | Specific GA product covering the PD–Fitzroy corridor at 16 m measured resolution. Fills mid-shelf gaps between lidar and deep multibeam. MSL vertical datum |
+| **IN2022 + SS200809 10 m grids** | 10 m | CSIRO (specific survey products) | wonky-hole-detection | Individual 10 m multibeam survey grids used for wonky hole detection. Cross-validate against GBR30 |
+
+### Habitat and benthic classification
+
+| Dataset | Type | Endpoint | Skill source | Use in RODNEY |
+|---------|------|----------|-------------|---------------|
+| **Allen Coral Atlas** (benthic) | Vector WFS | `allencoralatlas.org` — layer `coral-atlas:benthic_data_verbose`. Classes: Sand, Rubble, Rock, Coral/Algae, Seagrass, Microalgal Mats. CC BY 4.0, free, no auth | gbr-env-scan | Dense corridor-wide benthic substrate. Drives bait-holding classification. No `startIndex` paging — tile the bbox (6×6 grid) instead |
+| **Allen Coral Atlas** (geomorphic) | Vector WFS | `allencoralatlas.org` — layer `coral-atlas:geomorphic_data_verbose`. Classes: Deep Lagoon, Shallow Lagoon, Plateau, Reef Flat, Reef Crest, Reef Slope, **Back Reef Slope**, Patch Reefs, Drowned Reef, etc. CC BY 4.0 | gbr-env-scan | Geomorphic classification to ~15 m depth. CQL_FILTER and bbox are mutually exclusive — combine into single `CQL_FILTER=class_name='X' AND BBOX(geom,W,S,E,N)` |
+| **CCMR benthic layer** | Raster | eAtlas / CSIRO | wonky-hole-detection | Benthic classification used alongside ACA for reef masking in wonky hole detection |
+| **eAtlas WFS — GBRMPA reef features** | Vector WFS | `maps.eatlas.org.au/maps/wfs?service=WFS&version=1.0.0&request=GetFeature&typeName=ea-be:GBR_GBRMPA_GBR-features&outputFormat=application/json&bbox=145.75,-17.05,146.55,-16.30&maxFeatures=800` (EPSG:4283) | when-where-why-marks | Reef boundary polygons for proximity scoring. Place marks on their GBRMPA reef polygon |
+| **BRUVS data (AIMS eAtlas)** | Point CSV | eAtlas catalogue — 233 drops for Cairns corridor | gbr-env-scan | Ground-truth for benthic/species validation. Evidence layer MC16 |
+| **eAtlas GeoNetwork catalogue** | Discovery | `catalogue.eatlas.org.au/geonetwork/srv/eng/catalog.search` | gbr-env-scan | Master catalogue for GBR datasets — search `bathymetry cairns`, `benthic`, `sediment`, `reef features` |
+
+### Oceanographic feeds — specific endpoints and dataset IDs
+
+| Dataset | Variable | Endpoint / Dataset ID | Skill source | Use in RODNEY |
+|---------|----------|----------------------|-------------|---------------|
+| **NOAA ERDDAP MUR SST** | SST | `jplMURSST41` — griddap, `analysed_sst[(last-7):1:(last)]`, lat/lon stride 2 = 0.02°, CSV. Lags ~1–2 days | upwellings | Daily gap-filled SST for thermal front detection. Free, no auth |
+| **NOAA ERDDAP VIIRS Chl-a** | Chlorophyll-a | `nesdisVHNnoaaSNPPnoaa20NRTchlaGapfilledDaily` — `chlor_a[(last)][(0.0)]`, lat/lon stride 4, latitude ascending | upwellings | Near-real-time chlorophyll for colour break reading. Cloud-blanked — use 3-day composites |
+| **Open-Meteo Marine API** | Currents, sea level | `open-meteo.com` — ocean_current_velocity (km/h), ocean_current_direction (toward), sea_level_height_msl. 0.1° grid, past_days=1 + forecast_days=3, max 50 pts/request, cell_selection=sea | upwellings | Current velocity and direction for upwelling lift scoring. Free, no auth. Can time out — retry with backoff |
+| **Open-Meteo Forecast** | Wind | `api.open-meteo.com` — wind in knots, 3 points, past 5 + forecast 3 days | upwellings | Wind for Ekman transport modifier in upwelling score |
+| **NOAA Coral Reef Watch 5km SST** | SST, SST anomaly | `coralreefwatch.noaa.gov/product/5km/index_5km_sst.php` | gbr-env-scan | Reef-scale SST and anomaly patterns. Cross-check against ERDDAP MUR |
+| **NASA PACE/OCI (Worldview)** | Chlorophyll-a L2 | `worldview.earthdata.nasa.gov` — add "Chlorophyll a (L2) — PACE / OCI" layer | gbr-env-scan | Satellite chlorophyll for live colour break detection. Compare against eAtlas climatology |
+| **eReefs GBR4 Hydro v2.0** | SST, salinity, currents, sea level, wind | NCI THREDDS OPeNDAP: `.../dodsC/fx3/gbr4_v2/gbr4_simple_<YYYY-MM>.nc` | ereefs-integration | GBR-specific 4 km hydrodynamic model. **BLOCKED from cloud** — use on Mick's PC or via AIMS WMS |
+| **eReefs GBR1 Hydro (1 km)** | SST, currents | NCI THREDDS | ereefs-integration | Higher-res 1 km version. Shorter temporal coverage. **BLOCKED** |
+| **eReefs GBR4 BGC** | Chl-a, turbidity, nutrients | NCI THREDDS — vars: Chl_a_sum, Kd_490, NO3, NH4, TSS | ereefs-integration | Biogeochemistry model — depth-resolved chl-a. Fills cloud gaps. **BLOCKED** |
+| **AIMS THREDDS aggregation** | All eReefs | `thredds.ereefs.aims.gov.au/thredds/catalog.html` | ereefs-integration | Aggregated daily/monthly means. WMS for visual; OPeNDAP for extraction. **403 from cloud** |
+| **BOM tidal predictions** | Tide heights, times | `bom.gov.au/australia/tides/` — Cairns port | when-where-why-conditions | Preferred tide source for locked depth rule |
+| **BOM marine forecast** | Wind, seas, swell | `bom.gov.au/qld/forecasts/cairns.shtml` (marine tab) | gbr-env-scan | Wind/sea go/no-go. **BOM blocks automation** — Mick checks manually |
+| **seatemperature.org** | Coastal SST | `seatemperature.org/australia/queensland/cairns.htm` | gbr-env-scan | Quick coastal SST cross-check |
+
+### Blocked hosts (cannot fetch from cloud workspace)
+
+| Host | Error | Alternative |
+|------|-------|-------------|
+| `services.ga.gov.au` REST | 403 | Use AusSeabed WCS at `warehouse.ausseabed.gov.au` instead |
+| `gbr-dms.aims.gov.au` | Proxy denied | Use eAtlas catalogue or AIMS THREDDS WMS |
+| `dapds00.nci.org.au` (NCI THREDDS) | Blocked | Run eReefs extraction on Mick's PC; use AIMS WMS for visual |
+| `thredds.ereefs.aims.gov.au` | 403 | WMS may work for display layers; OPeNDAP blocked |
+
+### Datum note (from skills)
+
+**MSL = LAT + 1.74 m** at Cairns (Maritime Safety Queensland 2026 tidal planes). Earlier skills used 1.55 m — this is superseded. AHD = LAT + 1.643 m. GA 30 m grid and 16 m products are about MSL. Chartplotter and sounder are LAT.
+
 ## Recommended actions (priority order)
 
 1. **Download Qld LiDAR coverage shapefile** from data.qld.gov.au — overlay on HD9 to identify measured lidar that's not in pri-5. Free, immediate.
