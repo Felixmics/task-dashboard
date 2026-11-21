@@ -119,9 +119,93 @@ Sources extracted from 8 loaded GBR-specific skills. These skills are older refe
 | `dapds00.nci.org.au` (NCI THREDDS) | Blocked | Run eReefs extraction on Mick's PC; use AIMS WMS for visual |
 | `thredds.ereefs.aims.gov.au` | 403 | WMS may work for display layers; OPeNDAP blocked |
 
-### Datum note (from skills)
+### Datum note (from skills — CORRECTED by Drive REEF_TIDE_OFFSETS.md)
 
-**MSL = LAT + 1.74 m** at Cairns (Maritime Safety Queensland 2026 tidal planes). Earlier skills used 1.55 m — this is superseded. AHD = LAT + 1.643 m. GA 30 m grid and 16 m products are about MSL. Chartplotter and sounder are LAT.
+**Two MSL numbers — do not mix up:**
+- **1.74 m = Cairns wharf MSL above LAT** (Maritime Safety Queensland 2026 tidal planes, station 100280)
+- **~1.53–1.57 m = reef MSL above LAT** (varies by station — see reef tide offset table below)
+- **1.55 m = locked project figure** — matches the reefs, NOT the wharf
+
+Anything saying "MSL = LAT + 1.74" applied to a reef is the wharf figure and must be corrected to the reef value from the station table. AHD = LAT + 1.643 m. GA 30 m grid and 16 m products are about MSL. Chartplotter and sounder are LAT.
+
+## Google Drive–sourced additions (2026-11-21)
+
+Sources extracted from Mick's Google Drive folders ("claude file store", "Claude working model files", "Database Grok Organized", "Grok Data base marine"). These are older reference material — treat as leads, not hard rules.
+
+### Reef tide offset table (from REEF_TIDE_OFFSETS.md — LOCKED, authoritative)
+
+Tide at a reef ≠ Cairns tide. Formula: tide_at_reef = local_MSL + range_ratio × Cairns_anomaly(t − time_diff).
+
+| Station | dt (min) | MSL above LAT (m) | Range ratio |
+|---------|----------|-------------------|-------------|
+| Cairns | 0 | 1.74 | 1.00 |
+| Palm Cove | −8 | 1.71 | 1.00 |
+| Green Island | −6 | 1.54 | 1.00 |
+| Fitzroy Island | −9 | 1.57 | 1.00 |
+| Sudbury Cay | −6 | 1.57 | 1.00 |
+| High Island | −6 | 1.63 | 0.95 |
+| Michaelmas Cay | −11 | 1.56 | 0.91 |
+| Saxon Reef | −14 | 1.53 | 0.88 |
+| Low Islets | 0 | 1.59 | 0.93 |
+| Russell Island | −17 | 1.48 | 1.00 |
+
+Source: MSQ Semidiurnal Tidal Planes 2026 (epoch 2010–2029). Positions between stations use inverse-distance blend of 3 nearest. dt = time difference (negative = earlier than Cairns). Cairns model: 16-constituent harmonic fit, RMS 0.076 m vs official 2026 CSV (52,560 readings). Label: MODEL reef tide (official MSQ offsets), not BOM.
+
+Existing code: `tide_reef.py` (Drive folder "Reef tide layer 10 November 2026", id `1ZuIPQysUOe2GryuXB7XJufWjKQaui9Q9`) — 20-reef, 10-day, 10-min series using live MSQ CKAN predictions as backbone. JavaScript twin embedded in planner v66 artifact.
+
+### Additional bathymetry products (from mapping_sources_v3, 225 rows)
+
+| Dataset | Res | CRS | Status | Drive source |
+|---------|-----|-----|--------|-------------|
+| **GBR10/EOMAP SDB** | 9.6 m | EPSG:4326 | Held | Shallow (<~20 m) reef tops only. MSL datum |
+| **S2 log-ratio pseudo-SDB** | 9.6 m | EPSG:4326 | Held | Sentinel-2 B02/B03 relative depth (not calibrated). 671 MB |
+| **sdb_cairns.tif** | 10 m | EPSG:32755 | Held | Cairns SDB raster, 138 MB, covers whole corridor bbox |
+| **SOI Falkor multibeam 16 m** | 16 m | — | Held | 3 surveys: fk200429, fk200802, fk200930 (Drive IDs in Data Coverage Ref) |
+| **AusBathyTopo 250 m** (multiple vintages) | 250–267 m | EPSG:32755/4326 | Held | Corridor clips already in Drive. Vintage order: 2026 GA151280, 2024 GA150050, 2023 GA148758, 2009 GA67703 |
+| **NGBR 16 m corridor clip** | 15.4 m | EPSG:32755 | Held | Confirmed covering corridor. Footprint 16.45–17.05°S, 145.40–146.40°E (smaller than full engine corridor) |
+| **Working depth grid** | 32.1 m | EPSG:32755 | Held | `registry_RODNEY-working-depth-0-to-100m_32.1m_2026_EPSG32755_cog.tif` (27 MB, in Database Grok Organized) |
+
+### Additional habitat and evidence layers (from Cairns Reef Data Library)
+
+| Dataset | Type | Portal / Link | Use in RODNEY |
+|---------|------|---------------|---------------|
+| **Reef Cover: Cairns-Cooktown** | Vector (237 reefs, 15 m geomorphic + benthic) | PANGAEA 925657 | Validated reef zonation with field calibration (160 transects, 23 reefs). CC BY 4.0 |
+| **Allen Coral Atlas 15 m bathymetry** | Raster DEM | allencoralatlas.org | Third DEM in multiscale set — fills shallow reef voids |
+| **Multiscale bathy + terrain vars** (Guillaume et al.) | Raster | DOI 10.25845/ggyv-pq15 (AIMS), DOI 10.5061/dryad.wdbrv15vk (14 GB, 23 reefs) | Ready-made multiscale DEMs and derived terrain variables |
+| **GBR Seabed Biodiversity** | Point data (1,210 sites) | ResearchData Australia record 681787 | 9 substrate classes, 26 biohabitat classes, 12 faunal groups. Towed video + BRUVS. NOT YET DOWNLOADED |
+| **MARS marine sediment database** | Point data | marine.ga.gov.au | GA sediment samples. NOT YET OPENED |
+| **Seamap Australia** | WMS/WFS | seamapaustralia.org, GeoServer at geoserver.imas.utas.edu.au | National benthic habitat layer, hierarchical classification. Includes GBR10 |
+| **Shallow Marine Mask** (NESP MaC 3.17) | Shapefile | eAtlas share (IN DRIVE, Medium-Low version) | Shallow seabed where hard bottom and old shorelines are likely |
+| **GA inter-reef sediments report** | PDF (212 pp) | IN DRIVE (GA10248) | Comprehensive inter-reef sediment characterisation |
+
+### Additional oceanographic sources (from Cairns Reef Data Library)
+
+| Dataset | Variable | Portal | Use in RODNEY |
+|---------|----------|--------|---------------|
+| **Sentinel-3B OLCI true colour** | True colour WMS | CSIRO GeoServer WMS: `www.cmar.csiro.au/geoserver/ereefs/Sentinel-3B-OLCI-GBR/wms` | 2019-04 to ~2026-05 (6 months behind). Visual water colour for turbidity/colour break reading |
+| **NASA GIBS** | True colour, chl, SST | earthdata.nasa.gov GIBS API | The only layers current to the day. MODIS, VIIRS true colour and chl, GHRSST MUR SST |
+| **eReefs Data Broker API** | All eReefs | data.ereefs.org.au | Open, no key. Alternative to THREDDS |
+| **eReefs extraction tool** | CSV output | extraction.ereefs.aims.gov.au | AIMS point extraction service for eReefs variables |
+
+### QGIS rendering reference (from bathyvision_fixed_wcs.py)
+
+Reusable depth colour ramp for chartplotter-style rendering:
+
+| Depth | Colour | Label |
+|-------|--------|-------|
+| 0 m | #1ae8ff | Intertidal / Reef Flat |
+| −5 m | #00a2d9 | 0–5 m Shallow |
+| −20 m | #004fa8 | 5–20 m Slope |
+| −50 m | #011640 | 20–50 m Drop-off |
+| −200 m | #0b0114 | Deep Channels |
+
+Method: dual hillshade (East 90°, z=2.5, opacity 0.45 + NW 315°, z=1.5, opacity 0.35) over pseudocolour depth, with 2 m smoothed contours. CRS: EPSG:7855 (GDA2020 MGA Zone 55). Note: WCS URL `ga.gov.au` in the script is broken from cloud; use `warehouse.ausseabed.gov.au` instead.
+
+### Still open (from Data Coverage Reference addition, 6 Nov 2026)
+
+1. Backscatter grids (CSIRO) — still not held
+2. NGBR 16 m corridor clip footprint (16.45–17.05°S) is smaller than the full engine corridor (15.9–17.3°S)
+3. Vertical datum and cell size need recording per layer in the register
 
 ## Recommended actions (priority order)
 
