@@ -43,6 +43,20 @@ PELAGIC_DEPTH_INFO = {"PE01": ((0, 70), (0, 70)), "PE02": ((0, 30), (0, 30)), "P
 SHARK_NOTE = "deeper than the sweet spot: long way up, higher shark risk (Mick)"
 
 
+def msl_to_lat(msl_m):
+    """Convert MSL depth (negative = below surface) to LAT depth (positive = below LAT datum), rounded to 0.5 m."""
+    if msl_m is None or not np.isfinite(msl_m):
+        return None
+    return rhalf(-msl_m - MSL_ABOVE_LAT)
+
+
+def lat_to_msl(lat_m):
+    """Convert LAT depth (positive = below LAT datum) to MSL depth (negative = below surface)."""
+    if lat_m is None:
+        return None
+    return -(lat_m + MSL_ABOVE_LAT)
+
+
 def is_deep(depth_lat):
     return depth_lat is not None and DEEP_LAT_M < depth_lat <= CUTOFF_LAT_M
 
@@ -73,6 +87,17 @@ FQ = {"DE01": (38, 7), "DE03": (55, 5), "DE07": (38, 8), "DE05": (40, 9), "DE04"
 # tidal closures page), never hard-coded (Mick 21 Nov 2026 6:25 pm). If the feed cache is older than its max age or the page
 # differs, CLOSURES_STATUS carries a dated warning; the dates still come from that dated cache.
 BUFFER_RULE = "Buffer zone: troll only for pelagics"
+RUBBLE_SHALLOW_CUTOFF = 25.0
+RUBBLE_RULES = {
+    "DE03": (25, 100),  # red emperor on rubble: 25-100 m (core 30-60 m)
+    "DE04": (30, 150),  # nannygai on rubble: 30-100 m+ (capped at 150 m LAT limit)
+    "DE06": None,       # redthroat emperor: do not run on rubble until a range is set
+}
+RUBBLE_REEF_FLAT_ZONES = {"Inner Reef Flat", "Outer Reef Flat", "Reef Crest", "Shallow Lagoon"}
+# Feeding triggers (XB3, 12 Nov 2026): species-specific bite-window modifiers.
+# Keys = species_id, values = dict with optional tide_phase, moon_phase, pressure, temp_range, bait conditions.
+# Loaded from RAG at init when available; empty dict = no trigger data yet.
+FEEDING_TRIGGERS_PATH = f"{W}/shared_refs/RAG/sources/extracted_2026-11-14/species_feeding_triggers.csv"
 
 
 def load_closures():
@@ -243,6 +268,7 @@ class Engine:
         self.r_g30 = rasterio.open(R("depth", "gbr30_fallback")); self.r_zone = rasterio.open(R("habitat", "habitat_reef_zones"))
         for k in (("depth", "depth_msl"), ("depth", "depth_measured_flag"), ("depth", "gbr30_fallback"), ("habitat", "habitat_reef_zones")): use(R(*k))
         self.species = load_species(); use(f"{W}/marine_db_v5/13_Species/species_reef_demersal_v5.csv"); use(f"{W}/marine_db_v5/14_Pelagic/species_pelagic_v5.csv"); use(PROFILES_PY)
+        self.feeding_triggers = self._load_feeding_triggers()
         self.cur = make_current(json.load(open(R("current", "current_harmonics")))); use(R("current", "current_harmonics"))
         PP = json.load(open(R("current", "pressure_points"))); use(R("current", "pressure_points"))
         self.pp = []
@@ -322,12 +348,12 @@ class Engine:
             if z < CUTOFF_MSL_M:
                 return None, None, None  # deeper than 150 m LAT
             fl = samp(self.r_flag)
-            return rhalf(-z - MSL_ABOVE_LAT), ("surveyed" if fl == 1 else "estimated"), "HD8 10 m (120 m cut)"
+            return msl_to_lat(z), ("surveyed" if fl == 1 else "estimated"), "HD8 10 m (120 m cut)"
         z = samp(self.r_g30)
         if z is not None and z < 0:
             if z < CUTOFF_MSL_M:
                 return None, None, None
-            return rhalf(-z - MSL_ABOVE_LAT), "estimated", "GBR30 30 m (120 m cut, fallback)"
+            return msl_to_lat(z), "estimated", "GBR30 30 m (120 m cut, fallback)"
         return None, None, None
 
     GEO = {2: "Deep", 11: "Shallow Lagoon", 12: "Deep Lagoon", 13: "Inner Reef Flat", 14: "Outer Reef Flat", 15: "Reef Crest",
@@ -413,11 +439,37 @@ class Engine:
                               legal_datasets=sorted({c["dataset"] for c in out}), stats=dict(stats))
         return out, stats, A
 
-    def evidence(self, c, r_marks=300):
-        idx = self.ptree.query_ball_point([c["x"], c["y"]], r_marks)
-        sub = self.P.iloc[idx] if idx else self.P.iloc[[]]
-        marks = sub[sub.is_mark]
-        return dict(marks300=int(len(marks)), mark_species=" ".join(marks.species.fillna("").astype(str).tolist())[:4000])
+    @staticmethod
+    def _load_feeding_triggers():
+        """Load species feeding triggers (tide phase, moon, pressure, temp, bait) from RAG extract. Returns {species_id: {...}} or {}."""
+        import pandas as pd
+        try:
+            if not os.path.exists(FEEDING_TRIGGERS_PATH):
+                return {}
+            df = pd.read_csv(FEEDING_TRIGGERS_PATH)
+            triggers = {}
+            for _, r in df.iterrows():
+                sid = r.get("species_id")
+                if not sid:
+                    continue
+                triggers[sid] = {k: r[k] for k in df.columns if k != "species_id" and pd.notna(r[k])}
+            return triggers
+        except Exception:
+            return {}
+
+    def feeding_bonus(self, sp, day, hour):
+        """Score bonus from species feeding triggers (tide change, moon phase, pressure, temperature). Returns (bonus, reasons)."""
+        ft = self.feeding_triggers.get(sp["id"])
+        if not ft:
+            return 0.0, []
+        bonus, why = 0.0, []
+        tide_phase = ft.get("tide_phase")
+        if tide_phase and hour is not None:
+            pass  # TODO: match tide_phase (e.g. "run-in", "run-out", "change") against RECOM tide state at this hour
+        moon = ft.get("moon_phase")
+        if moon:
+            pass  # TODO: match moon_phase against current lunar phase for `day`
+        return bonus, why
 
     def score(self, sp, c, day, hours=None, current_override=None):
         """Point-first score for one species at one candidate. Returns (score, reasons, details) or (0, ...) if out of band."""
@@ -440,6 +492,18 @@ class Engine:
             if sp["group"] != "PELAGIC":
                 return 0.0, [f"{BUFFER_RULE} - no bottom fishing for {sp['name']}"], {}
             why.append(BUFFER_RULE)
+        # rubble search rule (Mick, 5 Nov 2026): drop shallow reef-flat rubble; species-specific rubble depth limits
+        is_rubble = "rubble" in c["bottom"]
+        if is_rubble:
+            geo = self.zone_at(c["x"], c["y"])
+            if geo in RUBBLE_REEF_FLAT_ZONES and dl < RUBBLE_SHALLOW_CUTOFF:
+                return 0.0, [f"shallow reef-flat rubble dropped ({dl} m LAT, {geo})"], {}
+            if sp["id"] in RUBBLE_RULES:
+                rr = RUBBLE_RULES[sp["id"]]
+                if rr is None:
+                    return 0.0, [f"rubble skipped for {sp['name']} (no rubble depth range set yet)"], {}
+                if not (rr[0] <= dl <= rr[1]):
+                    return 0.0, [f"rubble outside {sp['name']} rubble range {rr[0]}-{rr[1]} m ({dl} m LAT)"], {}
         # structure fit
         if sp["group"] == "DEMERSAL":
             b = (sp["bottom"] or set()) & c["bottom"]; z = sp["zones"] & c["zones"]
@@ -454,10 +518,6 @@ class Engine:
             bonus += 0.15; why.append("species habitat point (10-31 habitat file)")
         if sp["name"].split(" (")[0].lower() in c["species_txt"].lower():
             bonus += 0.05
-        if "_ev" not in c: c["_ev"] = self.evidence(c)
-        ev = c["_ev"]
-        if ev["marks300"]:
-            bonus += min(0.05 * ev["marks300"], 0.2); why.append(f"{ev['marks300']} of Mick's marks within 300 m")
         # current in the bite window (RECOM tide-driven current only)
         lon, lat = c["lon"], c["lat"]
         if current_override is not None:
@@ -491,7 +551,7 @@ class Engine:
         s = (df * sf * cf * zf + bonus) * sp["season"]
         cl = closed_on(sp["id"], day)
         if cl: why.append(closed_label(cl))
-        return round(s, 3), why, dict(current=cw, closed=cl, marks300=ev["marks300"], sweet=sweet, species_type=("pelagic" if sp["group"] == "PELAGIC" else "demersal"), deep=is_deep(dl))
+        return round(s, 3), why, dict(current=cw, closed=cl, sweet=sweet, species_type=("pelagic" if sp["group"] == "PELAGIC" else "demersal"), deep=is_deep(dl))
 
     def answer_sources(self, sid, sc, pick, day=None, top=3):
         """G12 (Mick, 21 Nov 2026 6:37 pm: "Yes, add the held-but-unused list (G12) to the engine").
@@ -506,7 +566,7 @@ class Engine:
             if ds in pick_ds:
                 used.append(dict(dataset=ds, rows_in_area=n, how="a top pick came from it")); continue
             if re.search(MICK_MARK_DS, ds):
-                used.append(dict(dataset=ds, rows_in_area=n, how="marks within 300 m counted as evidence")); continue
+                held.append(dict(kind="point data in the answer area", dataset=ds, rows_in_area=int(n), reason="Mick's marks (reference layer, not scored)")); continue
             if ds in scored_ds: why = f"scored for {sid}, none made the top {top}"
             elif ds in legal_ds: why = f"legal spots here scored 0 for {sid} (depth band, structure fit or season)"
             elif ds in cand_ds: why = "every spot from it here was blanked (no-take zone, deeper than 150 m LAT, no depth, or dries)"
