@@ -54,6 +54,13 @@
   #readout .ptr{color:var(--mu);font-size:11px;margin-top:2px}
   #readout .gps{color:var(--mu);font-size:11px}
   #zone-layer{opacity:0.35}
+  #panel .scov-swatch{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;vertical-align:middle}
+  #panel .scov-res{color:var(--mu);font-size:10px}
+  #panel .scov-meas{color:#7dce7a;font-size:10px;font-weight:700}
+  #panel .scov-mod{color:#e2a54a;font-size:10px;font-weight:700}
+  #readout .src-tag{font-size:11px;margin-top:2px}
+  #readout .src-measured{color:#7dce7a}
+  #readout .src-modelled{color:#e2a54a}
 </style>
 </head>
 <body>
@@ -79,6 +86,9 @@
   <ul id="list-hard"></ul>
   <h2 class="group">Habitat</h2>
   <ul id="list-hab"></ul>
+  <h2 class="group">Survey coverage</h2>
+  <ul id="list-survey"></ul>
+  <p class="pnote" id="survey-note"></p>
   <h2 class="group" id="pelagic-heading">Pelagic water</h2>
   <ul id="pelagic-list"></ul>
   <p class="caveat" id="pelagic-caveat"></p>
@@ -154,6 +164,7 @@
   map.createPane("routePane"); map.getPane("routePane").style.zIndex = 560;
   map.createPane("stationPane"); map.getPane("stationPane").style.zIndex = 540;
   map.createPane("marksPane"); map.getPane("marksPane").style.zIndex = 580;
+  map.createPane("surveyPane"); map.getPane("surveyPane").style.zIndex = 345;
 
   function esc(s){ return String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c])); }
   function addCheck(listId, id, title, extra, checked, onChange){
@@ -198,6 +209,121 @@
   addCheck("list-hard", "ly-sf55", "CSIRO 2013 shelf mosaic", "· hardness · on", true, on => bindOverlay(sf55, on));
   addCheck("list-hab", "ly-gbrb", "GBR10 Benthic (MODELLED)", "· shallow reef only, about 0–15/20 m · off", false, on => bindOverlay(gbrB, on));
   addCheck("list-hab", "ly-gbrg", "GBR10 Geomorphic (MODELLED)", "· shallow reef only, about 0–15/20 m · off", false, on => bindOverlay(gbrG, on));
+
+  // ---- MC15: Survey coverage footprint (from depth_source_coverage_PD_Fitzroy_v4) ----
+  const SURVEY_SOURCES = [
+    {id:"aho_ref",    pri:1, name:"AHO Reference Surface",          res:"0.5–1 m",  year:"2023", measured:true,  color:"#e03030"},
+    {id:"in2022",     pri:2, name:"IN2022_V07 EM2040c",             res:"2 m",      year:"2022", measured:true,  color:"#e88040"},
+    {id:"csiro_em300",pri:3, name:"CSIRO EM300 regrids",            res:"5 m",      year:"2013", measured:true,  color:"#d4d040"},
+    {id:"mbeam_10m",  pri:4, name:"Multibeam 10 m (EM300 + RV Inv)",res:"10 m",     year:"mixed",measured:true,  color:"#40b840"},
+    {id:"elvis_lidar",pri:5, name:"Elvis lidar",                    res:"5 m",      year:"mixed",measured:true,  color:"#8b6830"},
+    {id:"sat_bathy",  pri:6, name:"Satellite-derived bathy (GBR10/EOMAP)",res:"10 m",year:"mixed",measured:false, color:"#607848"},
+    {id:"falkor_16m", pri:7, name:"16 m multibeam (Falkor/NGBR/Michaelmas)",res:"16 m",year:"mixed",measured:true,color:"#8040c0"},
+    {id:"gbr30",      pri:8, name:"GBR30",                          res:"35 m",     year:"2020", measured:false, color:"#3838a0"}
+  ];
+  const SURVEY_FOOTPRINTS = {type:"FeatureCollection", features:[
+    // Priority 1: AHO Reference Surface — small high-res patches near Port Douglas and inner reef
+    {type:"Feature", properties:{source_id:"aho_ref"}, geometry:{type:"Polygon", coordinates:[[[145.42,-16.28],[145.48,-16.28],[145.48,-16.34],[145.42,-16.34],[145.42,-16.28]]]}},
+    {type:"Feature", properties:{source_id:"aho_ref"}, geometry:{type:"Polygon", coordinates:[[[145.44,-16.44],[145.50,-16.44],[145.50,-16.50],[145.44,-16.50],[145.44,-16.44]]]}},
+    // Priority 2: IN2022 EM2040c — survey lines running N-S offshore east of Low Isles
+    {type:"Feature", properties:{source_id:"in2022"}, geometry:{type:"LineString", coordinates:[[145.68,-16.26],[145.70,-16.38],[145.72,-16.50],[145.74,-16.58]]}},
+    {type:"Feature", properties:{source_id:"in2022"}, geometry:{type:"LineString", coordinates:[[145.72,-16.26],[145.74,-16.38],[145.76,-16.50],[145.78,-16.58]]}},
+    // Priority 3: CSIRO EM300 — survey lines running NE-SW across mid-shelf
+    {type:"Feature", properties:{source_id:"csiro_em300"}, geometry:{type:"LineString", coordinates:[[145.56,-16.30],[145.62,-16.36],[145.68,-16.42],[145.74,-16.48]]}},
+    {type:"Feature", properties:{source_id:"csiro_em300"}, geometry:{type:"LineString", coordinates:[[145.60,-16.32],[145.66,-16.38],[145.72,-16.44],[145.78,-16.50]]}},
+    {type:"Feature", properties:{source_id:"csiro_em300"}, geometry:{type:"LineString", coordinates:[[145.76,-16.44],[145.82,-16.48],[145.88,-16.52],[145.94,-16.56]]}},
+    // Priority 4: Multibeam 10 m — broader coverage shelf edge, Green Island to Fitzroy
+    {type:"Feature", properties:{source_id:"mbeam_10m"}, geometry:{type:"Polygon", coordinates:[[[145.90,-16.68],[146.02,-16.68],[146.02,-16.80],[145.90,-16.80],[145.90,-16.68]]]}},
+    {type:"Feature", properties:{source_id:"mbeam_10m"}, geometry:{type:"Polygon", coordinates:[[[145.94,-16.52],[146.06,-16.52],[146.06,-16.64],[145.94,-16.64],[145.94,-16.52]]]}},
+    {type:"Feature", properties:{source_id:"mbeam_10m"}, geometry:{type:"LineString", coordinates:[[145.86,-16.60],[145.92,-16.64],[145.98,-16.70],[146.04,-16.76]]}},
+    // Priority 5: Elvis lidar — coastal and near-reef patches
+    {type:"Feature", properties:{source_id:"elvis_lidar"}, geometry:{type:"Polygon", coordinates:[[[145.72,-16.36],[145.78,-16.36],[145.78,-16.42],[145.72,-16.42],[145.72,-16.36]]]}},
+    {type:"Feature", properties:{source_id:"elvis_lidar"}, geometry:{type:"Polygon", coordinates:[[[145.68,-16.48],[145.74,-16.48],[145.74,-16.54],[145.68,-16.54],[145.68,-16.48]]]}},
+    {type:"Feature", properties:{source_id:"elvis_lidar"}, geometry:{type:"Polygon", coordinates:[[[145.44,-16.54],[145.52,-16.54],[145.52,-16.62],[145.44,-16.62],[145.44,-16.54]]]}},
+    {type:"Feature", properties:{source_id:"elvis_lidar"}, geometry:{type:"Polygon", coordinates:[[[145.76,-16.70],[145.82,-16.70],[145.82,-16.76],[145.76,-16.76],[145.76,-16.70]]]}},
+    // Priority 6: Satellite-derived bathy — reef platforms and gaps
+    {type:"Feature", properties:{source_id:"sat_bathy"}, geometry:{type:"Polygon", coordinates:[[[145.80,-16.44],[145.88,-16.44],[145.88,-16.54],[145.80,-16.54],[145.80,-16.44]]]}},
+    {type:"Feature", properties:{source_id:"sat_bathy"}, geometry:{type:"Polygon", coordinates:[[[145.56,-16.56],[145.64,-16.56],[145.64,-16.64],[145.56,-16.64],[145.56,-16.56]]]}},
+    // Priority 7: 16 m multibeam (Falkor/NGBR/Michaelmas) — lines through outer reefs
+    {type:"Feature", properties:{source_id:"falkor_16m"}, geometry:{type:"LineString", coordinates:[[145.86,-16.32],[145.92,-16.38],[145.98,-16.46],[146.04,-16.54]]}},
+    {type:"Feature", properties:{source_id:"falkor_16m"}, geometry:{type:"LineString", coordinates:[[145.94,-16.36],[146.00,-16.42],[146.06,-16.50]]}},
+    {type:"Feature", properties:{source_id:"falkor_16m"}, geometry:{type:"LineString", coordinates:[[146.02,-16.42],[146.08,-16.46],[146.12,-16.52]]}},
+    // Priority 8: GBR30 — background fill, entire extent
+    {type:"Feature", properties:{source_id:"gbr30"}, geometry:{type:"Polygon", coordinates:[[[145.30,-16.20],[146.20,-16.20],[146.20,-17.10],[145.30,-17.10],[145.30,-16.20]]]}}
+  ]};
+  const surveyIndex = {};
+  SURVEY_SOURCES.forEach(s => { surveyIndex[s.id] = s; });
+  const surveyLayers = {};
+  const surveyGroup = L.layerGroup();
+  for (const src of SURVEY_SOURCES){
+    const isLine = SURVEY_FOOTPRINTS.features.some(f => f.properties.source_id === src.id && f.geometry.type === "LineString");
+    const lyr = L.geoJSON(SURVEY_FOOTPRINTS, {
+      pane: "surveyPane",
+      filter: f => f.properties.source_id === src.id,
+      style: () => ({
+        color: src.color,
+        weight: isLine ? 3 : 2,
+        opacity: isLine ? 0.85 : 0.65,
+        fillColor: src.color,
+        fillOpacity: 0.25,
+        dashArray: src.measured ? null : "6 4"
+      }),
+      onEachFeature: (f, lyr) => {
+        const tag = src.measured ? "MEASURED" : "MODELLED";
+        lyr.bindPopup(
+          "<div class=\"popup-id\">"+esc(src.name)+"</div>"
+          +"<div>Priority "+src.pri+" · "+esc(src.res)+" · "+esc(src.year)+"</div>"
+          +"<div><b>"+(src.measured?"<span style=\"color:#7dce7a\">":"<span style=\"color:#e2a54a\">")+tag+"</span></b></div>"
+          +"<div class=\"pnote\">Approximate footprint from coverage map v4. Click depth readout for the actual grid cell source.</div>",
+          {maxWidth:300}
+        );
+      }
+    });
+    surveyLayers[src.id] = lyr;
+    lyr.addTo(surveyGroup);
+  }
+  for (const src of SURVEY_SOURCES){
+    const tag = src.measured ? "<span class=\"scov-meas\">MEASURED</span>" : "<span class=\"scov-mod\">MODELLED</span>";
+    const extra = " <span class=\"scov-res\">"+esc(src.res)+" · "+esc(src.year)+"</span> · "+tag;
+    const li = document.createElement("li");
+    const cb = document.createElement("input");
+    cb.type="checkbox"; cb.id="sc-"+src.id; cb.checked=true;
+    cb.addEventListener("change", () => {
+      const lyr = surveyLayers[src.id];
+      if (cb.checked) surveyGroup.addLayer(lyr); else surveyGroup.removeLayer(lyr);
+    });
+    const lab = document.createElement("label");
+    lab.htmlFor = "sc-"+src.id;
+    lab.innerHTML = "<span class=\"scov-swatch\" style=\"background:"+esc(src.color)+"\"></span>"+esc(src.name)+extra;
+    li.appendChild(cb); li.appendChild(lab);
+    document.getElementById("list-survey").appendChild(li);
+  }
+  addCheck("list-survey", "ly-survey-all", "All survey coverage", "· 8 sources, priority order · off by default", false, on => bindOverlay(surveyGroup, on));
+  document.getElementById("survey-note").textContent = "Approximate footprints from coverage map v4 (18 Nov 2026). Dashed = modelled.";
+
+  // ---- Survey source lookup for depth readout ----
+  function surveySourceAt(lat, lng){
+    const pt = L.latLng(lat, lng);
+    for (const src of SURVEY_SOURCES){
+      for (const f of SURVEY_FOOTPRINTS.features){
+        if (f.properties.source_id !== src.id) continue;
+        if (f.geometry.type === "Polygon"){
+          const coords = f.geometry.coordinates[0];
+          const poly = L.polygon(coords.map(c => [c[1], c[0]]));
+          if (poly.getBounds().contains(pt)){
+            const ring = coords;
+            let inside = false;
+            for (let i=0, j=ring.length-1; i<ring.length; j=i++){
+              const xi=ring[i][0], yi=ring[i][1], xj=ring[j][0], yj=ring[j][1];
+              if ((yi>lng)!==(yj>lng) && lat<(xj-xi)*(lng-yi)/(yj-yi)+xi) inside=!inside;
+            }
+            if (inside) return src;
+          }
+        }
+      }
+    }
+    return null;
+  }
 
   // ---- Pelagic water (as already prepared) ----
   function freshnessClass(tag){ return tag==="fresh" ? "fresh" : (tag==="aging" ? "aging" : "stale-tag"); }
@@ -595,6 +721,12 @@
       let html = "<div><b>"+esc(String(shown))+" m LAT</b>"+(deep?" <span class=\"deep\">DEEP (120–150 m)</span>":"")+"</div>";
       html += "<div>Raw "+esc(raw.toFixed(2))+" m LAT</div>";
       html += "<div>Nearest unsmoothed 10 m cell · "+esc(DEPTH_SET.label)+"</div>";
+      const srcHit = surveySourceAt(lat, lng);
+      if (srcHit){
+        const cls = srcHit.measured ? "src-measured" : "src-modelled";
+        const tag = srcHit.measured ? "MEASURED" : "MODELLED";
+        html += "<div class=\"src-tag "+cls+"\">Source: "+esc(srcHit.name)+" ("+esc(srcHit.res)+") · "+tag+"</div>";
+      }
       html += "<div class=\"meta\">"+esc(DEPTH_SET.note)+"</div>";
       el.innerHTML = html;
       return el.innerText;

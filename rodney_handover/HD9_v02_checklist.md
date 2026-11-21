@@ -12,6 +12,7 @@ Built from: carry-over audit (26 must-carry), features register (87 items, 20 LO
 | YES | MC12 GPX export | Export button downloads visible marks as GPX file |
 | YES | MC13 Satellite photo toggle | Esri World Imagery tile layer, checkbox in top bar |
 | YES | MC19 Zoning outlines toggle | GBRMPA zones scaffold (needs ZONING_LAYER GeoJSON), off by default |
+| YES | MC15 Survey coverage footprint | 8 source datasets from v4 priority map, measured vs modelled legend, per-source toggles, source shown in depth readout |
 | — | MC1 Four-corner layout | Partial — search box positioned, readout still BL, needs full layout rework |
 | — | MC18 Hardness click-to-read | Needs hardness tile sidecar (same approach as depth tiles) |
 
