@@ -1,0 +1,738 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<title>HD9 v02 — RODNEY fishing planner</title>
+<link rel="stylesheet" href="HD9%20v01%20-%202026-11-21%20150%20m%20LAT%20and%20pelagic%20water/leaflet.css">
+<style>
+  :root{--bg:#0b0f14;--pn:#141b24;--tx:#eef3f8;--mu:#93a1b3;--ln:#2a3645;--ac:#9be28a;--warn:#ffb020;--bad:#e0322b;--glass:rgba(16,22,30,.92)}
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0;background:var(--bg);color:var(--tx);font:13px/1.35 "Segoe UI",system-ui,sans-serif;overflow:hidden}
+  #map{position:absolute;inset:0;background:#071018}
+  #top{position:absolute;top:0;left:0;right:0;z-index:1000;display:flex;align-items:center;gap:12px;padding:8px 12px;background:var(--glass);border-bottom:1px solid #000;flex-wrap:wrap}
+  #top h1{margin:0;font-size:14px;letter-spacing:.04em}
+  #top .note{color:var(--warn);font-weight:700;font-size:12px}
+  #top .legal{color:var(--mu);font-size:11px;margin-left:auto}
+  #top label{display:flex;align-items:center;gap:6px;cursor:pointer}
+  #top button{font:inherit;background:#1d2733;color:#fff;border:1px solid #000;border-radius:6px;padding:4px 8px;cursor:pointer}
+  #panel{position:absolute;top:54px;right:10px;z-index:900;width:292px;max-height:calc(100% - 96px);overflow:auto;background:var(--glass);border:1px solid #000;border-radius:8px;padding:8px 10px 10px;box-shadow:0 4px 16px rgba(0,0,0,.45)}
+  #panel h2{margin:10px 0 4px;font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#c9d4e0}
+  #panel h2:first-child{margin-top:2px}
+  #panel ul{list-style:none;margin:0;padding:0}
+  #panel li{display:flex;align-items:flex-start;gap:6px;padding:2px 0}
+  #panel li label{cursor:pointer;flex:1}
+  #panel .meta{color:#9aa8b8;font-size:11px}
+  #panel .fresh{color:#7dce7a;font-weight:700}
+  #panel .aging{color:var(--warn);font-weight:700}
+  #panel .caveat,#panel .pnote{margin:6px 0 0;color:#c5cdd6;font-size:11px}
+  #panel .group{border-top:1px solid var(--ln);margin-top:6px;padding-top:2px}
+  #readout{position:absolute;left:10px;bottom:10px;z-index:900;background:var(--glass);border:1px solid #000;border-radius:8px;padding:8px 10px;min-width:240px;max-width:360px}
+  #readout b{color:var(--ac)}
+  #readout .deep{color:var(--warn);font-weight:700}
+  .popup-id{font-weight:700}
+  .deep{color:#e2a54a;font-weight:700}
+  .est{font-style:italic;color:#555}
+  .zone-rule,.nav-only{font-weight:700;margin:6px 0}
+  .closed{color:#a00000;font-weight:800;margin:6px 0}
+  .stale{color:#8a4b00;font-size:12px;margin:4px 0}
+  .leaflet-container{background:#071018;font:12px/1.35 "Segoe UI",system-ui,sans-serif}
+  .species-col{column-count:1}
+  #panel .sp{padding-left:14px}
+  #search-box{position:absolute;top:54px;left:10px;z-index:900;display:flex;gap:4px}
+  #search-box input{font:12px/1.35 "Segoe UI",system-ui,sans-serif;background:#1d2733;color:#eef3f8;border:1px solid #000;border-radius:6px;padding:5px 8px;width:200px}
+  #search-box input::placeholder{color:#6a7a8e}
+  #search-box .results{position:absolute;top:32px;left:0;width:260px;max-height:240px;overflow:auto;background:var(--glass);border:1px solid #000;border-radius:6px;display:none}
+  #search-box .results.open{display:block}
+  #search-box .results div{padding:4px 8px;cursor:pointer;font-size:12px}
+  #search-box .results div:hover{background:#1d2733}
+  #search-box .results div .sid{color:var(--mu);font-size:11px}
+  #mode-tabs{display:flex;gap:2px;margin:4px 0 2px}
+  #mode-tabs button{font:11px/1 "Segoe UI",system-ui,sans-serif;background:#1d2733;color:#93a1b3;border:1px solid #2a3645;border-radius:4px;padding:3px 8px;cursor:pointer;text-transform:uppercase;letter-spacing:.06em}
+  #mode-tabs button.active{background:#2a3645;color:#eef3f8;font-weight:700}
+  #readout .ptr{color:var(--mu);font-size:11px;margin-top:2px}
+  #readout .gps{color:var(--mu);font-size:11px}
+  #zone-layer{opacity:0.35}
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="top">
+  <h1>HD9 v02</h1>
+  <span class="note" id="depth-note">Depth: interim HD8 150 m set; HD9 grid not built yet</span>
+  <label><input type="checkbox" id="toggle-marks" checked> Mick's marks</label>
+  <button type="button" id="imp">Import GPX</button>
+  <input type="file" id="impf" accept=".gpx,application/gpx+xml,text/xml" hidden>
+  <button type="button" id="export-btn">Export GPX</button>
+  <label><input type="checkbox" id="toggle-sat"> Satellite</label>
+  <span class="legal">Not for navigation · Personal use in RODNEY only</span>
+</div>
+<div id="search-box">
+  <input type="text" id="mark-search" placeholder="Search marks…" autocomplete="off">
+  <div class="results" id="search-results"></div>
+</div>
+<aside id="panel">
+  <h2>Depth</h2>
+  <ul id="list-depth"></ul>
+  <h2 class="group">Hardness / backscatter</h2>
+  <ul id="list-hard"></ul>
+  <h2 class="group">Habitat</h2>
+  <ul id="list-hab"></ul>
+  <h2 class="group" id="pelagic-heading">Pelagic water</h2>
+  <ul id="pelagic-list"></ul>
+  <p class="caveat" id="pelagic-caveat"></p>
+  <p class="pnote" id="pelagic-note"></p>
+  <h2 class="group">Zoning</h2>
+  <ul id="list-zones"></ul>
+  <h2 class="group">Marks and targets</h2>
+  <ul id="list-marks"></ul>
+  <div id="mode-tabs">
+    <button class="active" data-mode="all">ALL</button>
+    <button data-mode="demersal">DEMERSAL</button>
+    <button data-mode="pelagic">PELAGIC</button>
+  </div>
+  <div id="species-all">
+    <h2>DEMERSAL</h2>
+    <ul id="list-demersal" class="sp"></ul>
+    <h2>PELAGIC</h2>
+    <ul id="list-pelagic-sp" class="sp"></ul>
+  </div>
+  <div id="species-demersal" style="display:none">
+    <h2>DEMERSAL</h2>
+    <ul id="list-demersal-only" class="sp"></ul>
+  </div>
+  <div id="species-pelagic" style="display:none">
+    <h2>PELAGIC</h2>
+    <ul id="list-pelagic-only" class="sp"></ul>
+  </div>
+  <h2 class="group">Route check</h2>
+  <ul id="list-route"></ul>
+</aside>
+<div id="readout">Click the map for a depth readout (unsmoothed grid, nearest cell).</div>
+<script src="HD9%20v01%20-%202026-11-21%20150%20m%20LAT%20and%20pelagic%20water/leaflet.js"></script>
+<script src="HD9%20v01%20-%202026-11-21%20150%20m%20LAT%20and%20pelagic%20water/vendor/proj4.min.js"></script>
+<script src="HD9%20v01%20-%202026-11-21%20150%20m%20LAT%20and%20pelagic%20water/vendor/geotiff.browser.min.js"></script>
+<script src="HD9%20v01%20-%202026-11-21%20150%20m%20LAT%20and%20pelagic%20water/data.js"></script>
+<script src="hd9_v01_prep/marks_layer.js"></script>
+<script>
+(function(){
+  // ONE-LINE SWAP when the HD9 grid arrives: change folder and file names in DEPTH_SET.
+  const DEPTH_SET = {
+    label: "interim HD8 depth",
+    note: "Depth: interim HD8 150 m set; HD9 grid not built yet",
+    folder: "../marine_db_v5/01_Depth/RODNEY HD8 engine copies 150 m cutoff v01 2026-11-21/",
+    depthFile: "HD8_depth_MSL_10m_EPSG32755 150 m cutoff.tif",
+    bandFile: "HD8_depth_band_10m 150 m cutoff.tif",
+    flagFile: "HD8_measured_flag_10m 150 m cutoff.tif",
+    crs: "EPSG:32755",
+    latOffset: 1.74
+  };
+  const SIDECAR = "HD9 v01 - 2026-11-21 150 m LAT and pelagic water";
+  const asset = (p) => encodeURI(SIDECAR + "/" + p);
+  const meta = (typeof LAYER_META === "object" && LAYER_META) ? LAYER_META : {};
+  document.getElementById("depth-note").textContent = DEPTH_SET.note;
+
+  if (typeof proj4 === "function"){
+    proj4.defs("EPSG:32755", "+proj=utm +zone=55 +south +datum=WGS84 +units=m +no_defs +type=crs");
+  }
+
+  const map = L.map("map", {zoomControl:true, maxZoom:18}).setView([-16.685, 146.124], 12);
+  window._hd9map = map;
+  L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
+    maxZoom: 19,
+    attribution: "&copy; OpenStreetMap, &copy; CARTO"
+  }).addTo(map);
+
+  map.createPane("depthPane"); map.getPane("depthPane").style.zIndex = 350;
+  map.createPane("hardPane"); map.getPane("hardPane").style.zIndex = 370;
+  map.createPane("habPane"); map.getPane("habPane").style.zIndex = 360;
+  map.createPane("deepPane"); map.getPane("deepPane").style.zIndex = 380;
+  map.createPane("pelagicRaster"); map.getPane("pelagicRaster").style.zIndex = 390;
+  map.createPane("pelagicVector"); map.getPane("pelagicVector").style.zIndex = 450;
+  map.createPane("wonkyPane"); map.getPane("wonkyPane").style.zIndex = 520;
+  map.createPane("routePane"); map.getPane("routePane").style.zIndex = 560;
+  map.createPane("stationPane"); map.getPane("stationPane").style.zIndex = 540;
+  map.createPane("marksPane"); map.getPane("marksPane").style.zIndex = 580;
+
+  function esc(s){ return String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c])); }
+  function addCheck(listId, id, title, extra, checked, onChange){
+    const li=document.createElement("li");
+    const cb=document.createElement("input");
+    cb.type="checkbox"; cb.id=id; cb.checked=!!checked;
+    cb.addEventListener("change", () => onChange(cb.checked));
+    const lab=document.createElement("label");
+    lab.htmlFor=id;
+    lab.innerHTML = esc(title) + (extra ? " <span class=\"meta\">"+extra+"</span>" : "");
+    li.appendChild(cb); li.appendChild(lab);
+    document.getElementById(listId).appendChild(li);
+    return cb;
+  }
+  function bindOverlay(layer, on){
+    if (on) map.addLayer(layer); else map.removeLayer(layer);
+  }
+
+  // ---- Depth / hardness / habitat image overlays ----
+  const depthOverview = L.imageOverlay(asset("overlays/depth_multibeam.png"), meta.depth_bounds, {opacity:0.95, pane:"depthPane", interactive:false, alt:"interim HD8 depth"});
+  const depthDetail = (meta.detail_bounds)
+    ? L.imageOverlay(asset("overlays/depth_multibeam_detail.png"), meta.detail_bounds, {opacity:1, pane:"depthPane", interactive:false, alt:"interim HD8 depth detail"})
+    : null;
+  const deepBand = L.imageOverlay(asset("overlays/depth_deep_band.png"), meta.band_bounds, {opacity:0.9, pane:"deepPane", interactive:false, alt:"deep 120-150 m"});
+  const em710 = L.imageOverlay(asset("overlays/hardness_em710_grafton.png"), meta.em710_bounds, {opacity:0.72, pane:"hardPane", interactive:false, alt:"EM710 Grafton"});
+  const sf55 = L.imageOverlay(asset("overlays/hardness_csiro2013_sf55.png"), meta.sf55_bounds, {opacity:0.62, pane:"hardPane", interactive:false, alt:"CSIRO 2013 shelf mosaic"});
+  const gbrB = L.imageOverlay(asset("overlays/gbr10_benthic_modelled.png"), meta.gbr10_benthic_bounds, {opacity:0.8, pane:"habPane", interactive:false, alt:"GBR10 Benthic MODELLED"});
+  const gbrG = L.imageOverlay(asset("overlays/gbr10_geomorphic_modelled.png"), meta.gbr10_geomorphic_bounds, {opacity:0.8, pane:"habPane", interactive:false, alt:"GBR10 Geomorphic MODELLED"});
+
+  depthOverview.addTo(map);
+  if (depthDetail) depthDetail.addTo(map);
+  deepBand.addTo(map);
+  em710.addTo(map);
+  sf55.addTo(map);
+
+  addCheck("list-depth", "ly-depth", "Multibeam depth", "· "+esc(DEPTH_SET.label)+" · on", true, on => {
+    bindOverlay(depthOverview, on);
+    if (depthDetail) bindOverlay(depthDetail, on);
+  });
+  addCheck("list-depth", "ly-deep", "Deep 120–150 m LAT", "· band 1", true, on => bindOverlay(deepBand, on));
+  addCheck("list-hard", "ly-em710", "EM710 Grafton", "· hardness · on", true, on => bindOverlay(em710, on));
+  addCheck("list-hard", "ly-sf55", "CSIRO 2013 shelf mosaic", "· hardness · on", true, on => bindOverlay(sf55, on));
+  addCheck("list-hab", "ly-gbrb", "GBR10 Benthic (MODELLED)", "· shallow reef only, about 0–15/20 m · off", false, on => bindOverlay(gbrB, on));
+  addCheck("list-hab", "ly-gbrg", "GBR10 Geomorphic (MODELLED)", "· shallow reef only, about 0–15/20 m · off", false, on => bindOverlay(gbrG, on));
+
+  // ---- Pelagic water (as already prepared) ----
+  function freshnessClass(tag){ return tag==="fresh" ? "fresh" : (tag==="aging" ? "aging" : "stale-tag"); }
+  function pelagicDir(){
+    const cfg = (typeof PELAGIC_WATER === "object" && PELAGIC_WATER) ? PELAGIC_WATER : {};
+    return cfg.dir || "../reef-app/feeds/cache/ocean_grids";
+  }
+  function frontPopup(props, layerCfg){
+    const kind = props.kind === "sst_front" ? "SST front" : (props.kind === "chl_edge" ? "Chlorophyll edge" : (props.kind || "Front"));
+    const date = layerCfg.obs_date_display || props.obs_date || "";
+    const fresh = layerCfg.freshness || "";
+    const level = (props.level != null) ? String(props.level) : "";
+    let html = '<div class="popup-id">'+esc(kind)+'</div>';
+    if (date || fresh) html += '<div>'+esc(date)+(fresh ? ' · <span class="'+freshnessClass(fresh)+'">'+esc(fresh)+'</span>' : '')+'</div>';
+    if (level !== "") html += '<div>Level '+esc(level)+'</div>';
+    html += '<div class="pnote">'+esc((typeof PELAGIC_WATER_CAVEAT === "string" && PELAGIC_WATER_CAVEAT) ? PELAGIC_WATER_CAVEAT : "Inshore edges may be turbidity.")+'</div>';
+    return html;
+  }
+  const pelagicLayers = {};
+  const layerCfgs = (typeof PELAGIC_WATER_LAYERS !== "undefined" && Array.isArray(PELAGIC_WATER_LAYERS)) ? PELAGIC_WATER_LAYERS : [];
+  const frontsFC = (typeof OCEAN_FRONTS_LAYER === "object" && OCEAN_FRONTS_LAYER) ? OCEAN_FRONTS_LAYER : {type:"FeatureCollection", features:[]};
+  for (const cfg of layerCfgs){
+    let layer = null;
+    if (cfg.kind === "image" && cfg.image && cfg.leaflet_bounds){
+      layer = L.imageOverlay(pelagicDir().replace(/\/$/,"")+"/"+cfg.image, cfg.leaflet_bounds, {
+        opacity: 0.75, pane:"pelagicRaster", interactive:false, alt: cfg.title || cfg.id
+      });
+    } else if (cfg.kind === "vector"){
+      const want = cfg.feature_kind;
+      const color = (want === "sst_front") ? "#d35400" : "#5fd08a";
+      layer = L.geoJSON(frontsFC, {
+        pane: "pelagicVector",
+        filter: feat => feat && feat.properties && feat.properties.kind === want,
+        style: () => ({color, weight:2.5, opacity:0.95, fill:false}),
+        onEachFeature: (feat, lyr) => lyr.bindPopup(frontPopup(feat.properties||{}, cfg), {maxWidth:280})
+      });
+    }
+    if (layer){
+      pelagicLayers[cfg.id] = layer;
+      if (cfg.default_on) layer.addTo(map);
+    }
+  }
+  const pHead = document.getElementById("pelagic-heading");
+  pHead.textContent = (typeof PELAGIC_WATER_GROUP === "string" && PELAGIC_WATER_GROUP) ? PELAGIC_WATER_GROUP : "Pelagic water";
+  document.getElementById("pelagic-caveat").textContent = (typeof PELAGIC_WATER_CAVEAT === "string" && PELAGIC_WATER_CAVEAT) ? PELAGIC_WATER_CAVEAT : "Inshore edges may be turbidity.";
+  document.getElementById("pelagic-note").textContent = (typeof PELAGIC_WATER_NOTE === "string" && PELAGIC_WATER_NOTE) ? PELAGIC_WATER_NOTE : "Pelagic marks only. No depth sweet spot.";
+  for (const cfg of layerCfgs){
+    const fresh = cfg.freshness || "";
+    const extra = "· "+esc(cfg.obs_date_display || cfg.obs_date || "")+" · <span class=\""+freshnessClass(fresh)+"\">"+esc(fresh)+"</span>"+(cfg.default_on?" · on":" · off");
+    addCheck("pelagic-list", "pw-"+cfg.id, cfg.title || cfg.id, extra, !!cfg.default_on, on => {
+      const lyr = pelagicLayers[cfg.id]; if (lyr) bindOverlay(lyr, on);
+    });
+  }
+
+  // ---- Closures (live first, saved copy fallback) ----
+  let closuresPack = null;
+  function parseYMD(s){ const m=String(s||"").match(/^(\d{4})-(\d{2})-(\d{2})$/); return m? new Date(+m[1], +m[2]-1, +m[3]) : null; }
+  function fmtDate(s){
+    const d=parseYMD(s); if(!d) return s;
+    const months=["January","February","March","April","May","June","July","August","September","October","November","December"];
+    return d.getDate()+" "+months[d.getMonth()]+" "+d.getFullYear();
+  }
+  function todayLocal(){ const n=new Date(); return new Date(n.getFullYear(), n.getMonth(), n.getDate()); }
+  function inPeriod(period, day){ const a=parseYMD(period.start), b=parseYMD(period.end); return !!(a&&b&&day>=a&&day<=b); }
+  function closedHits(p){
+    if (!closuresPack || !closuresPack.closures) return [];
+    if (p.navigation_only || p.route_check_exclude) return [];
+    const ids = p.species_id ? [String(p.species_id)] : [];
+    if (!ids.length) return [];
+    const day = todayLocal(), hits=[];
+    for (const c of closuresPack.closures){
+      const apply = c.applies_to_species_ids || [];
+      if (!ids.some(id => apply.indexOf(id)!==-1)) continue;
+      for (const period of (c.periods||[])){
+        if (inPeriod(period, day)) hits.push({name:c.name, start:period.start, end:period.end});
+      }
+    }
+    return hits;
+  }
+  function popupHtml(p){
+    const navOnly = !!(p.navigation_only || p.route_check_exclude);
+    const name = p.name ? "<div>"+esc(p.name)+"</div>" : "";
+    const nav = navOnly ? "<div class=\"nav-only\">"+esc(p.label || "Passage marker (navigation only)")+"</div>" : "";
+    const bits = navOnly ? [p.reef].filter(Boolean).map(esc).join(" · ")
+                         : [p.species, p.reef, p.structure_type].filter(Boolean).map(esc).join(" · ");
+    const shown = (p.depth_LAT_m_display != null) ? p.depth_LAT_m_display : p.depth_LAT_m;
+    const isPelagic = String(p.species||"") === "pelagic";
+    const depth = (shown != null && !isPelagic)
+      ? ("Depth "+shown+" m LAT"+(p.deep ? " <span class=\"deep\">DEEP (120–150 m)</span>" : ""))
+      : (isPelagic ? "" : "Depth unknown");
+    const est = (!isPelagic && p.estimated) ? "<div class=\"est\">estimated from HD8</div>" : "";
+    const sweet = (!navOnly && !isPelagic && p.sweet_spot_text) ? "<div>"+esc(p.sweet_spot_text)+"</div>" : "";
+    const rule = p.zone_rule ? "<div class=\"zone-rule\">"+esc(p.zone_rule)+"</div>" : "";
+    const hits = closedHits(p);
+    let closed = "";
+    if (hits.length){
+      closed = hits.map(h => "<div class=\"closed\">CLOSED: "+esc(h.name)+" "+esc(fmtDate(h.start))+" – "+esc(fmtDate(h.end))+"</div>").join("");
+      if (closuresPack && closuresPack.stale){
+        const when = closuresPack.savedAt ? "Saved "+closuresPack.savedAt+". " : "";
+        closed += "<div class=\"stale\">"+esc(when+(closuresPack.warning || "Saved copy, may be out of date"))+"</div>";
+      }
+    }
+    const notes = p.notes ? "<div>"+esc(p.notes)+"</div>" : "";
+    return "<div class=\"popup-id\">"+esc(p.id||"")+"</div>"+name+nav
+      +(bits?"<div>"+bits+"</div>":"")+(depth?"<div>"+depth+"</div>":"")+est+sweet+rule+closed+notes;
+  }
+
+  // ---- Mick's marks + species grouping ----
+  const DEMERSAL = [
+    {id:"DE01", key:"coral_trout", name:"Common coral trout"},
+    {id:"DE02", key:"bar_cheek", name:"Bar-cheek coral trout"},
+    {id:"DE03", key:"red_emperor", name:"Red emperor"},
+    {id:"DE04", key:"nannygai", name:"Large-mouth nannygai"},
+    {id:"DE05", key:"nannygai_sm", name:"Small-mouth nannygai"},
+    {id:"DE06", key:"spangled_emperor", name:"Spangled emperor"},
+    {id:"DE07", key:"redthroat_emperor", name:"Redthroat emperor"},
+    {id:"DE08", key:"mangrove_jack", name:"Mangrove jack"},
+    {id:"DE09", key:"cods_groupers", name:"Cods and groupers"},
+    {id:"DE10", key:"fingermark", name:"Golden snapper (fingermark)"},
+    {id:"demersal_any", key:"demersal_any", name:"species not set"}
+  ];
+  const PELAGIC = [
+    {id:"PE01", key:"spanish_mackerel", name:"Spanish mackerel"},
+    {id:"PE02", key:"spotted_mackerel", name:"Spotted mackerel"},
+    {id:"PE03", key:"grey_mackerel", name:"Grey mackerel"},
+    {id:"PE04", key:"school_mackerel", name:"School mackerel"},
+    {id:"PE05", key:"yellowfin_tuna", name:"Yellowfin tuna"},
+    {id:"PE06", key:"mackerel_tuna", name:"Mackerel tuna"},
+    {id:"PE07", key:"wahoo", name:"Wahoo"},
+    {id:"PE08", key:"sailfish", name:"Sailfish"},
+    {id:"PE09", key:"black_marlin", name:"Black marlin"},
+    {id:"PE10", key:"giant_trevally", name:"Giant trevally"},
+    {id:"pelagic", key:"pelagic", name:"pelagic (species not named)"}
+  ];
+  const speciesOn = {};
+  [...DEMERSAL, ...PELAGIC].forEach(s => speciesOn[s.id] = true);
+  function markSpeciesId(p){
+    if (p.navigation_only || p.route_check_exclude) return "NAV";
+    if (p.species_id) return String(p.species_id);
+    if (p.species === "pelagic") return "pelagic";
+    if (p.species === "demersal_any" || !p.species) return "demersal_any";
+    return p.species_id || p.species || "demersal_any";
+  }
+  function markVisible(p){
+    const sid = markSpeciesId(p);
+    if (sid === "NAV") return true;
+    return speciesOn[sid] !== false;
+  }
+
+  const marksGroup = L.layerGroup();
+  const markMarkers = [];
+  let nMarks=0, nDeep=0;
+  function rebuildMarks(){
+    marksGroup.clearLayers();
+    markMarkers.length = 0;
+    nMarks=0; nDeep=0;
+    if (typeof MARKS_LAYER === "undefined" || !MARKS_LAYER.features) return;
+    for (const f of MARKS_LAYER.features){
+      const p = f.properties || {};
+      const c = f.geometry && f.geometry.coordinates;
+      if (!c) continue;
+      if (!markVisible(p)) continue;
+      nMarks++;
+      if (p.deep) nDeep++;
+      let color="#4aa3e8", fill="#4aa3e8";
+      if (p.navigation_only || p.route_check_exclude){ color="#bbb"; fill="#888"; }
+      else if (p.species==="pelagic"){ color="#e2a54a"; fill="#f0c36a"; }
+      else if (p.zone_rule_group==="BUZ"){ color="#9acd32"; fill="#9acd32"; }
+      else if (p.zone_rule_group==="CPZ"){ color="#f5d76e"; fill="#f5d76e"; }
+      else if (p.deep){ color="#e2a54a"; fill="#e2a54a"; }
+      const m = L.circleMarker([c[1], c[0]], {
+        radius: (p.zone_rule_group==="BUZ" || p.navigation_only) ? 6 : 4.5,
+        color, weight:1.2, fillColor:fill, fillOpacity:0.85, pane:"marksPane"
+      });
+      m._props = p;
+      m.bindPopup(popupHtml(p), {maxWidth:340});
+      m.addTo(marksGroup);
+      markMarkers.push(m);
+    }
+  }
+  function rebindMarkPopups(){ for (const m of markMarkers) m.bindPopup(popupHtml(m._props||{}), {maxWidth:340}); }
+  rebuildMarks();
+  marksGroup.addTo(map);
+  document.getElementById("toggle-marks").addEventListener("change", ev => bindOverlay(marksGroup, ev.target.checked));
+
+  function addSpeciesChecks(listId, items){
+    for (const s of items){
+      addCheck(listId, "sp-"+s.id, s.name, "· "+s.id, true, on => {
+        speciesOn[s.id] = on;
+        // DE04/DE05 share species_id nannygai on marks (only DE04 is tagged). Keep both boxes.
+        rebuildMarks();
+        if (!document.getElementById("toggle-marks").checked) map.removeLayer(marksGroup);
+      });
+    }
+  }
+  addSpeciesChecks("list-demersal", DEMERSAL);
+  addSpeciesChecks("list-pelagic-sp", PELAGIC);
+
+  addCheck("list-marks", "ly-marksinfo", "Mick's marks", "· "+(meta.marks_shown||nMarks)+" shown, "+(meta.marks_hidden||0)+" hidden in no-take", true, on => {
+    document.getElementById("toggle-marks").checked = on;
+    bindOverlay(marksGroup, on);
+  });
+
+  // Wonky holes
+  const wonky = L.geoJSON((typeof WONKY_HOLES_LAYER==="object" && WONKY_HOLES_LAYER) ? WONKY_HOLES_LAYER : {features:[]}, {
+    pane: "wonkyPane",
+    pointToLayer: (f, ll) => L.circleMarker(ll, {radius:5, color:"#6ec6ff", weight:1.2, fillColor:"#6ec6ff", fillOpacity:0.8, pane:"wonkyPane"}),
+    style: f => {
+      const k = (f.properties||{}).kind;
+      if (k==="searle_channel") return {color:"#c789ff", weight:2, opacity:0.85};
+      return {color:"#6ec6ff", weight:2, opacity:0.8};
+    },
+    onEachFeature: (f, lyr) => {
+      const p=f.properties||{};
+      const html = "<div class=\"popup-id\">"+esc(p.label||"Wonky hole target")+"</div>"
+        +(p.id?"<div>"+esc(p.id)+"</div>":"")
+        +(p.name?"<div>"+esc(p.name)+"</div>":"")
+        +"<div>"+esc(p.note||"DEPRESSION, not a structure. Look for a dip on the sounder, not a lump. Make several slow, precise passes.")+"</div>"
+        +(p.zone_rule?"<div class=\"zone-rule\">"+esc(p.zone_rule)+"</div>":"")
+        +(p.depth_m!=null?"<div>Depth "+esc(p.depth_m)+" m</div>":"");
+      lyr.bindPopup(html, {maxWidth:320});
+    }
+  }).addTo(map);
+  addCheck("list-marks", "ly-wonky", "Wonky hole target", "· "+(meta.wonky_shown_points||0)+" holes, "+(meta.wonky_shown_channels||0)+" channels · on", true, on => bindOverlay(wonky, on));
+
+  // Stations (all 20+20, including Green Zones)
+  const stations = L.geoJSON((typeof STATIONS_LAYER==="object" && STATIONS_LAYER) ? STATIONS_LAYER : {features:[]}, {
+    pane: "stationPane",
+    pointToLayer: (f, ll) => {
+      const k=(f.properties||{}).kind;
+      const color = k==="current" ? "#7dce7a" : "#7ab8ff";
+      return L.circleMarker(ll, {radius:6, color, weight:1.5, fillColor:color, fillOpacity:0.85, pane:"stationPane"});
+    },
+    onEachFeature: (f, lyr) => {
+      const p=f.properties||{};
+      const html = "<div class=\"popup-id\">"+esc(p.name||"Station")+"</div>"
+        +"<div class=\"nav-only\">"+esc(p.label||"tide reference only, not a fishing spot")+"</div>"
+        +(p.next_tide?"<div>"+esc(p.next_tide)+"</div>":"")
+        +(p.then?"<div>"+esc(p.then)+"</div>":"")
+        +(p.lag_text?"<div>"+esc(p.lag_text)+"</div>":"")
+        +(p.today_label?"<div>"+esc(p.today_label)+"</div>":"");
+      lyr.bindPopup(html, {maxWidth:300});
+    }
+  }).addTo(map);
+  addCheck("list-marks", "ly-stations", "Tide and current stations", "· 20 + 20 · tide reference only, not a fishing spot · on", true, on => bindOverlay(stations, on));
+
+  // ---- Route check (ON) ----
+  const routeStops = (typeof ROUTE_CHECK !== "undefined" && Array.isArray(ROUTE_CHECK)) ? ROUTE_CHECK : [];
+  const routeGroup = L.layerGroup();
+  const routeLatLngs = [];
+  for (const s of routeStops){
+    const lat=+s.lat, lon=+s.lon;
+    if (!isFinite(lat)||!isFinite(lon)) continue;
+    routeLatLngs.push([lat, lon]);
+    const isRamp = /ramp|start|return/i.test(s.notes||s.assessment||s.mark_name||"");
+    const species = String(s.species||"");
+    const isPelagic = /pelagic|mackerel|tuna|wahoo|sailfish|marlin|trevally/i.test(species) && !/coral trout|emperor|nannygai|fingermark|cod/i.test(species);
+    let html = "<div class=\"popup-id\">Route check "+esc(s.order||"")+" · "+esc(s.mark_name||s.mark_id||"")+"</div>";
+    if (s.mark_id) html += "<div>"+esc(s.mark_id)+"</div>";
+    // Sweet spot first for demersal stops; pelagic and ramps get no depth note.
+    if (!isRamp && !isPelagic && s.sweet_spot) html += "<div><b>Sweet spot:</b> "+esc(s.sweet_spot)+"</div>";
+    if (!isRamp && !isPelagic && s.depth_lat_m) {
+      html += "<div>Depth "+esc(s.depth_lat_m)+" m LAT"+(s.depth_band==="deep"?" <span class=\"deep\">DEEP (120–150 m)</span>":"")+"</div>";
+    }
+    if (s.species) html += "<div>"+esc(s.species)+"</div>";
+    if (s.zone) html += "<div>"+esc(s.zone)+"</div>";
+    const notes = s.notes || s.assessment || "";
+    if (/yellow/i.test(notes)) html += "<div class=\"zone-rule\">Yellow zone: one line, one hook</div>";
+    if (/buffer|troll only/i.test(notes)) html += "<div class=\"zone-rule\">Buffer zone: troll only for pelagics</div>";
+    if (notes) html += "<div>"+esc(notes)+"</div>";
+    html += "<div class=\"pnote\">Waypoint assessment only. The lines just connect stops; this is not a navigation route.</div>";
+    const mk = L.circleMarker([lat, lon], {
+      radius: isRamp ? 7 : 7,
+      color: isRamp ? "#fff" : "#ff5a3c",
+      weight: 2,
+      fillColor: isRamp ? "#888" : "#ff5a3c",
+      fillOpacity: 0.95,
+      pane: "routePane"
+    }).bindPopup(html, {maxWidth:360});
+    const lab = L.marker([lat, lon], {
+      pane: "routePane",
+      interactive: false,
+      icon: L.divIcon({className:"rte-lab", html:"<div style=\"color:#fff;font-weight:800;text-shadow:0 0 3px #000;font-size:11px\">"+esc(s.order)+"</div>", iconSize:[16,16], iconAnchor:[-6,-6]})
+    });
+    mk.addTo(routeGroup); lab.addTo(routeGroup);
+  }
+  if (routeLatLngs.length>1){
+    L.polyline(routeLatLngs, {color:"#ff5a3c", weight:3, opacity:0.85, dashArray:"8 6", pane:"routePane"}).addTo(routeGroup);
+  }
+  routeGroup.addTo(map);
+  addCheck("list-route", "ly-route", "Route check", "· 16 stops, 6–150 m LAT · on", true, on => bindOverlay(routeGroup, on));
+
+  // ---- Import GPX ----
+  const gpxGroup = L.layerGroup().addTo(map);
+  document.getElementById("imp").onclick = () => document.getElementById("impf").click();
+  document.getElementById("impf").addEventListener("change", ev => {
+    const file = ev.target.files && ev.target.files[0];
+    ev.target.value = "";
+    if (!file) return;
+    const r = new FileReader();
+    r.onload = () => {
+      gpxGroup.clearLayers();
+      const doc = new DOMParser().parseFromString(String(r.result), "application/xml");
+      if (doc.getElementsByTagName("parsererror").length) return;
+      const wpts = doc.getElementsByTagNameNS("*", "wpt");
+      for (const w of wpts){
+        const lat=+w.getAttribute("lat"), lon=+w.getAttribute("lon");
+        if (!isFinite(lat)||!isFinite(lon)) continue;
+        const name=(w.getElementsByTagName("name")[0]||{}).textContent || "imported";
+        L.circleMarker([lat,lon], {radius:5, color:"#8ee08e", weight:1.5, fillColor:"#8ee08e", fillOpacity:0.9})
+          .bindPopup("<div class=\"popup-id\">Imported GPX</div><div>"+esc(name)+"</div>")
+          .addTo(gpxGroup);
+      }
+    };
+    r.readAsText(file);
+  });
+
+  // ---- Closures fetch ----
+  function useSavedCopy(reason){
+    const copy = (typeof CLOSURES_SAVED_COPY === "object" && CLOSURES_SAVED_COPY) ? CLOSURES_SAVED_COPY : null;
+    if (!copy || !copy.closures){ closuresPack=null; rebindMarkPopups(); return; }
+    closuresPack = {closures:copy.closures, stale:true, savedAt:copy.saved_at||"", warning:copy.warning||"Saved copy, may be out of date", source:copy.source_url||""};
+    rebindMarkPopups();
+  }
+  function looksLikeOfficialClosuresPage(text){
+    const t=String(text||"");
+    if (/just a moment|cf-challenge|cloudflare/i.test(t) && !/coral reef fin fish/i.test(t)) return false;
+    return /coral reef fin fish/i.test(t) || /spanish mackerel/i.test(t);
+  }
+  if (typeof CLOSURES_FEED_URL === "string"){
+    fetch(CLOSURES_FEED_URL, {mode:"cors"}).then(r => { if(!r.ok) throw new Error("HTTP "+r.status); return r.text(); }).then(text => {
+      if (looksLikeOfficialClosuresPage(text)){
+        // Prefer saved copy structure if live parse is uncertain; live page reached only if clearly official.
+        useSavedCopy("live page reached; using dated saved copy until a parser confirms dates");
+      } else useSavedCopy("live feed not readable");
+    }).catch(() => useSavedCopy("live feed not readable"));
+  } else useSavedCopy("no live feed URL");
+
+  // ---- Depth readout from unsmoothed nearest 10 m cell (tiled sidecar) ----
+  const DEPTH_TILES = asset("overlays/depth_readout_tiles/");
+  let depthManifest=null, depthTileCache={};
+  async function loadDepthManifest(){
+    if (depthManifest) return depthManifest;
+    const r = await fetch(DEPTH_TILES + "manifest.json");
+    if (!r.ok) throw new Error("manifest HTTP "+r.status);
+    depthManifest = await r.json();
+    return depthManifest;
+  }
+  async function gunzipBytes(buf){
+    if (typeof DecompressionStream === "undefined") throw new Error("no DecompressionStream");
+    const stream = new Response(buf).body.pipeThrough(new DecompressionStream("gzip"));
+    return new Uint8Array(await new Response(stream).arrayBuffer());
+  }
+  async function getTile(mx, tx, ty){
+    const key = tx+"_"+ty;
+    if (depthTileCache[key]) return depthTileCache[key];
+    const rec = (mx.tiles||[]).find(t => t.x===tx && t.y===ty);
+    if (!rec){ depthTileCache[key] = null; return null; }
+    const r = await fetch(DEPTH_TILES + rec.file);
+    if (!r.ok) throw new Error("tile HTTP "+r.status);
+    const arr = await gunzipBytes(await r.arrayBuffer());
+    depthTileCache[key] = new Int16Array(arr.buffer, arr.byteOffset, arr.byteLength/2);
+    return depthTileCache[key];
+  }
+  function roundHalfUp(v){
+    return Math.round(Number(v)*2 + Number.EPSILON)/2;
+  }
+  async function sampleAt(lat, lng){
+    const el = document.getElementById("readout");
+    try {
+      const mx = await loadDepthManifest();
+      if (typeof proj4 !== "function"){
+        el.textContent = "Depth readout needs proj4. "+DEPTH_SET.note;
+        return el.textContent;
+      }
+      const [easting, northing] = proj4("EPSG:4326", "EPSG:32755", [lng, lat]);
+      const col = Math.floor((easting - mx.origin_x) / mx.pixel_size_x);
+      const row = Math.floor((northing - mx.origin_y) / mx.pixel_size_y);
+      if (col<0 || row<0 || col>=mx.width || row>=mx.height){
+        el.innerHTML = "<div><b>No depth</b> outside the interim HD8 150 m grid.</div><div class=\"meta\">"+esc(DEPTH_SET.note)+"</div>";
+        return el.innerText;
+      }
+      const tx = Math.floor(col / mx.tile_size), ty = Math.floor(row / mx.tile_size);
+      const tile = await getTile(mx, tx, ty);
+      const ts = mx.tile_size;
+      const i = (row - ty*ts)*ts + (col - tx*ts);
+      const cm = tile ? tile[i] : mx.nodata;
+      if (cm==null || cm===mx.nodata){
+        el.innerHTML = "<div><b>No depth</b> at this cell (nodata, shown transparent — never land).</div><div class=\"meta\">"+esc(DEPTH_SET.note)+"</div>";
+        return el.innerText;
+      }
+      const raw = cm/100;
+      const shown = roundHalfUp(raw);
+      const deep = raw>120 && raw<=150;
+      let html = "<div><b>"+esc(String(shown))+" m LAT</b>"+(deep?" <span class=\"deep\">DEEP (120–150 m)</span>":"")+"</div>";
+      html += "<div>Raw "+esc(raw.toFixed(2))+" m LAT</div>";
+      html += "<div>Nearest unsmoothed 10 m cell · "+esc(DEPTH_SET.label)+"</div>";
+      html += "<div class=\"meta\">"+esc(DEPTH_SET.note)+"</div>";
+      el.innerHTML = html;
+      return el.innerText;
+    } catch (e){
+      el.textContent = "Depth readout failed: "+e.message+". "+DEPTH_SET.note;
+      return el.textContent;
+    }
+  }
+  window._hd9sampleDepth = sampleAt;
+  map.on("click", ev => sampleAt(ev.latlng.lat, ev.latlng.lng));
+
+  // ---- MC2: Live pointer readout (mousemove) ----
+  let lastMouseSample = 0;
+  map.on("mousemove", ev => {
+    const now = Date.now();
+    if (now - lastMouseSample < 120) return;
+    lastMouseSample = now;
+    const el = document.getElementById("readout");
+    const lat = ev.latlng.lat.toFixed(5), lng = ev.latlng.lng.toFixed(5);
+    const gps = "<div class=\"gps\">" + esc(lat) + ", " + esc(lng) + "</div>";
+    sampleAt(ev.latlng.lat, ev.latlng.lng).then(() => {
+      if (!el.querySelector(".gps")) el.innerHTML += gps;
+    });
+    if (!el.querySelector(".gps")) el.innerHTML += gps;
+  });
+
+  // ---- MC13: Satellite photo toggle ----
+  const satLayer = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
+    maxZoom: 19, attribution: "&copy; Esri", opacity: 0.85
+  });
+  document.getElementById("toggle-sat").addEventListener("change", ev => {
+    if (ev.target.checked) satLayer.addTo(map); else map.removeLayer(satLayer);
+  });
+
+  // ---- MC10: Marks search ----
+  const searchInput = document.getElementById("mark-search");
+  const searchResults = document.getElementById("search-results");
+  function searchMarks(q){
+    searchResults.innerHTML = "";
+    if (!q || q.length < 2){ searchResults.classList.remove("open"); return; }
+    const lq = q.toLowerCase();
+    const hits = [];
+    if (typeof MARKS_LAYER !== "undefined" && MARKS_LAYER.features){
+      for (const f of MARKS_LAYER.features){
+        const p = f.properties || {};
+        const c = f.geometry && f.geometry.coordinates;
+        if (!c) continue;
+        const hay = [p.id, p.name, p.species, p.reef, p.structure_type].filter(Boolean).join(" ").toLowerCase();
+        if (hay.indexOf(lq) !== -1) hits.push({p, lat: c[1], lon: c[0]});
+        if (hits.length >= 15) break;
+      }
+    }
+    if (!hits.length){ searchResults.classList.remove("open"); return; }
+    searchResults.classList.add("open");
+    for (const h of hits){
+      const d = document.createElement("div");
+      d.innerHTML = esc(h.p.name || h.p.id || "mark") + " <span class=\"sid\">" + esc(h.p.species || "") + " · " + esc(h.p.reef || "") + "</span>";
+      d.addEventListener("click", () => {
+        map.setView([h.lat, h.lon], 15);
+        searchResults.classList.remove("open");
+        searchInput.value = h.p.name || h.p.id || "";
+        for (const m of markMarkers){
+          if (m._props && m._props.id === h.p.id){ m.openPopup(); break; }
+        }
+      });
+      searchResults.appendChild(d);
+    }
+  }
+  searchInput.addEventListener("input", () => searchMarks(searchInput.value));
+  searchInput.addEventListener("focus", () => { if (searchInput.value.length >= 2) searchMarks(searchInput.value); });
+  document.addEventListener("click", ev => { if (!document.getElementById("search-box").contains(ev.target)) searchResults.classList.remove("open"); });
+
+  // ---- MC11: Species picker mode switch ----
+  const modeTabs = document.querySelectorAll("#mode-tabs button");
+  function setSpeciesMode(mode){
+    modeTabs.forEach(b => b.classList.toggle("active", b.dataset.mode === mode));
+    document.getElementById("species-all").style.display = mode === "all" ? "" : "none";
+    document.getElementById("species-demersal").style.display = mode === "demersal" ? "" : "none";
+    document.getElementById("species-pelagic").style.display = mode === "pelagic" ? "" : "none";
+    if (mode === "demersal"){
+      DEMERSAL.forEach(s => { speciesOn[s.id] = true; });
+      PELAGIC.forEach(s => { speciesOn[s.id] = false; });
+    } else if (mode === "pelagic"){
+      DEMERSAL.forEach(s => { speciesOn[s.id] = false; });
+      PELAGIC.forEach(s => { speciesOn[s.id] = true; });
+    } else {
+      [...DEMERSAL, ...PELAGIC].forEach(s => { speciesOn[s.id] = true; });
+    }
+    rebuildMarks();
+    document.querySelectorAll("[id^=\"sp-\"]").forEach(cb => {
+      const sid = cb.id.replace("sp-","");
+      cb.checked = speciesOn[sid] !== false;
+    });
+  }
+  modeTabs.forEach(b => b.addEventListener("click", () => setSpeciesMode(b.dataset.mode)));
+  addSpeciesChecks("list-demersal-only", DEMERSAL);
+  addSpeciesChecks("list-pelagic-only", PELAGIC);
+
+  // ---- MC12: Export GPX from visible marks ----
+  document.getElementById("export-btn").addEventListener("click", () => {
+    let gpx = '<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="RODNEY HD9 v02">\n';
+    for (const m of markMarkers){
+      const p = m._props || {};
+      const ll = m.getLatLng();
+      const name = esc(p.name || p.id || "mark");
+      gpx += '  <wpt lat="'+ll.lat.toFixed(6)+'" lon="'+ll.lng.toFixed(6)+'">\n    <name>'+name+'</name>\n';
+      if (p.depth_LAT_m != null) gpx += '    <ele>-'+p.depth_LAT_m+'</ele>\n';
+      if (p.species) gpx += '    <desc>'+esc(p.species)+'</desc>\n';
+      gpx += '  </wpt>\n';
+    }
+    gpx += '</gpx>';
+    const blob = new Blob([gpx], {type:"application/gpx+xml"});
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "HD9_v02_marks.gpx";
+    a.click();
+    URL.revokeObjectURL(a.href);
+  });
+
+  // ---- MC19: Zoning outlines toggle (scaffold) ----
+  const zoningGroup = L.layerGroup();
+  if (typeof ZONING_LAYER === "object" && ZONING_LAYER && ZONING_LAYER.features){
+    L.geoJSON(ZONING_LAYER, {
+      pane: "habPane",
+      style: f => {
+        const z = (f.properties||{}).zone_type || "";
+        const colors = {green:"#00aa00", yellow:"#cccc00", blue:"#2288ff", pink:"#ff66aa", olive:"#808000"};
+        return {color: colors[z.toLowerCase()] || "#888", weight:1.5, opacity:0.6, fill:false};
+      },
+      onEachFeature: (f, lyr) => {
+        const p = f.properties || {};
+        lyr.bindPopup("<div class=\"popup-id\">" + esc(p.name || "Zone") + "</div><div>" + esc(p.zone_type || "") + "</div>");
+      }
+    }).addTo(zoningGroup);
+  }
+  addCheck("list-zones", "ly-zones", "GBRMPA zoning outlines", "· off by default (quiet) · needs ZONING_LAYER data", false, on => bindOverlay(zoningGroup, on));
+
+})();
+</script>
+</body>
+</html>
