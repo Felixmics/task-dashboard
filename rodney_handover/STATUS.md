@@ -53,6 +53,25 @@ Test results on the Grok engine (14 Nov): **85 PASS / 1 WARN / 0 FAIL**
 - 1 READY but blocked (rubble marks append — needs source files)
 - 7 PENDING (HD8 rebuild items + structure method v0)
 
+## Zoning screen (24 Nov 2026)
+
+`10_zoning_screen.py` performs point-in-polygon against GBRMPA Zoning Plan 2003 polygons
+(`GBRMP_zoning_Cairns_corridor.geojson`, 38 zones, from Mick's Drive `gbrmpa_zoning` folder).
+
+**Results on 3,350 marks:**
+| Status | Count |
+|--------|-------|
+| Line fishing OK (General Use + Habitat Protection) | 1,727 |
+| Limited (Conservation Park, 1 line 1 hook) | 344 |
+| **NO TAKE (Marine National Park + Preservation)** | **337** |
+| Special rules (Commonwealth Islands) | 1 |
+| Outside zoning polygons (check chartplotter) | 941 |
+
+**337 marks are in NO-TAKE zones** — these must be flagged or removed before the register is used.
+Key reefs affected: Norman, Saxon, Hastings, Michaelmas (all MNP-16-1050), Moore, Milln, Euston, Briggs/Sudbury, Green Island, Scott, Low Islands.
+
+Zoning results CSV ready for Mick's review. Sheet NOT updated — waiting for approval.
+
 ## Blockers for other bots
 
 | What | Who | Why |
