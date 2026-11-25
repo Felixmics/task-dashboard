@@ -70,7 +70,8 @@ Test results on the Grok engine (14 Nov): **85 PASS / 1 WARN / 0 FAIL**
 **337 marks are in NO-TAKE zones** — these must be flagged or removed before the register is used.
 Key reefs affected: Norman, Saxon, Hastings, Michaelmas (all MNP-16-1050), Moore, Milln, Euston, Briggs/Sudbury, Green Island, Scott, Low Islands.
 
-Zoning results CSV ready for Mick's review. Sheet NOT updated — waiting for approval.
+Zoning results written to new Google Sheet: [RODNEY Mastermark 2026-11-25 (zoned)](https://docs.google.com/spreadsheets/d/14h0qNUnsFrNiBLn4Crxzm9YXax3ydb3TBtQrYsOidSY/edit)
+Columns T (zone) and U (legal_screening) populated for all 3,350 marks. Original sheet unchanged.
 
 ## Blockers for other bots
 
