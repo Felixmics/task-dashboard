@@ -100,6 +100,12 @@ RUBBLE_REEF_FLAT_ZONES = {"Inner Reef Flat", "Outer Reef Flat", "Reef Crest", "S
 FEEDING_TRIGGERS_PATH = f"{W}/shared_refs/RAG/sources/extracted_2026-11-14/species_feeding_triggers.csv"
 OCEAN_GRID_PATH = f"{W}/reef-app/feeds/cache/ocean_grids/ocean_layers_grid.json"
 OCEAN_FRONTS_PATH = f"{W}/reef-app/feeds/cache/ocean_grids/ocean_fronts.geojson"
+# Step 5: higher-res current modelling config — swap these when CSIRO/AIMS release finer grids
+CURRENT_MODEL_RES = "RECOM 200-500m"  # current: eReefs RECOM reef-scale SHOC
+CURRENT_MODEL_NOTE = "9km SMOC tidal-only, depth-averaged, 8.5% surveyed terrain"
+VORTICITY_THRESHOLD_HIGH = 0.0005  # rad/s — strong lee eddy (Step 1)
+VORTICITY_THRESHOLD_MOD = 0.0002   # rad/s — moderate recirculation
+WIND_LEE_THRESHOLD_KN = 10.0       # Mick: 10 kn+ northerly = change of plan, fish the lee faces (Step 3)
 
 
 def load_closures():
@@ -460,6 +466,176 @@ class Engine:
         except Exception:
             return {}
 
+    # ── Step 1: Reef-scale vorticity from RECOM current field ──
+    def vorticity_at(self, lon, lat, day, minute):
+        """Compute curl of the RECOM current field: d(v)/dx - d(u)/dy.
+        Positive = anticlockwise eddy, negative = clockwise. Magnitude = eddy strength.
+        Uses central finite differences on the RECOM grid at ~0.01 deg spacing."""
+        dd = 0.005  # half-step in degrees (~500m at this latitude)
+        c_n = self.cur(lon, lat + dd, day, minute)
+        c_s = self.cur(lon, lat - dd, day, minute)
+        c_e = self.cur(lon + dd, lat, day, minute)
+        c_w = self.cur(lon - dd, lat, day, minute)
+        if not all((c_n, c_s, c_e, c_w)):
+            return None
+        cos_lat = math.cos(math.radians(lat))
+        dx = 2 * dd * 111320 * cos_lat  # metres
+        dy = 2 * dd * 111320             # metres
+        # u,v from RECOM are in mm/s; convert kn back: 1 kn = 514.444 mm/s
+        to_ms = lambda c: (c["kn"] * 0.514444 * math.sin(math.radians(c["dir_to"])),
+                           c["kn"] * 0.514444 * math.cos(math.radians(c["dir_to"])))
+        u_e, v_e = to_ms(c_e); u_w, v_w = to_ms(c_w)
+        u_n, v_n = to_ms(c_n); u_s, v_s = to_ms(c_s)
+        dvdx = (v_e - v_w) / dx
+        dudy = (u_n - u_s) / dy
+        return dvdx - dudy  # vorticity in rad/s
+
+    def eddy_score(self, lon, lat, day, hours):
+        """Step 1: Score lee eddy strength at a point using vorticity across tide hours.
+        Returns (bonus, reasons). High vorticity = fish-holding lee eddy."""
+        if not hours:
+            hours = list(range(5, 19))
+        best_vort = 0.0
+        best_hour = None
+        for h in hours:
+            v = self.vorticity_at(lon, lat, day, h * 60)
+            if v is not None and abs(v) > best_vort:
+                best_vort = abs(v)
+                best_hour = h
+        bonus, why = 0.0, []
+        if best_vort > VORTICITY_THRESHOLD_HIGH:
+            bonus = 0.2
+            why.append(f"STRONG lee eddy detected (vorticity {best_vort:.5f} rad/s at {best_hour:02d}:00)")
+        elif best_vort > VORTICITY_THRESHOLD_MOD:
+            bonus = 0.1
+            why.append(f"moderate recirculation (vorticity {best_vort:.5f} rad/s at {best_hour:02d}:00)")
+        return bonus, why
+
+    # ── Step 2: Combined productivity index ──
+    def productivity_index(self, c, day, hours=None):
+        """Convergence zone scoring: pressure point + upwelling + SST front scored multiplicatively.
+        A pressure point WITH an upwelling signal AND a colour line is vastly more productive than any alone."""
+        signals = {}
+        # pressure point signal
+        pp_signal = 0.0
+        if c["kind"] == "pressure_point":
+            dday = c.get("pp", {}).get("days", {}).get(day)
+            pp_signal = 1.0 / max(1, dday["rank"]) ** 0.2 if dday else 0.5
+        else:
+            near = c.get("_near")
+            if near and math.dist(near["xy"], (c["x"], c["y"])) < 1000:
+                pp_signal = 0.7
+        signals["pressure_point"] = pp_signal
+        # ocean feature signals
+        ob, _ = self.ocean_score(c["lon"], c["lat"])
+        signals["ocean_features"] = min(ob / 0.55, 1.0)  # normalise to 0-1 (max ocean_score ~0.55)
+        # eddy signal
+        eb, _ = self.eddy_score(c["lon"], c["lat"], day, hours)
+        signals["eddy"] = min(eb / 0.2, 1.0)
+        # convergence: count how many signals are active (>0.3)
+        active = sum(1 for v in signals.values() if v > 0.3)
+        if active >= 3:
+            convergence_bonus = 0.3
+            reason = f"CONVERGENCE ZONE: pressure point + ocean features + eddy ({active}/3 signals active)"
+        elif active == 2:
+            convergence_bonus = 0.15
+            keys = [k for k, v in signals.items() if v > 0.3]
+            reason = f"convergence: {' + '.join(keys)} ({active}/3 signals)"
+        else:
+            convergence_bonus = 0.0
+            reason = None
+        return convergence_bonus, reason, signals
+
+    # ── Step 3: Wind-modified pressure points ──
+    def wind_modified_pp_rank(self, c, wind_speed_kn=None, wind_dir_deg=None):
+        """Rerank pressure points when wind > 10kn. Lee faces get boosted, exposed faces get penalised.
+        Wind dir = direction wind is COMING FROM (meteorological convention)."""
+        if wind_speed_kn is None or wind_speed_kn < WIND_LEE_THRESHOLD_KN:
+            return 0.0, []
+        if wind_dir_deg is None:
+            return 0.0, []
+        geo = self.zone_at(c["x"], c["y"])
+        if not geo:
+            return 0.0, []
+        # get current direction at this point (which way the structure faces the flow)
+        cur = self.cur(c["lon"], c["lat"], None, 0) if hasattr(self, 'cur') else None
+        # compute whether this point is on the lee side of its reef relative to wind
+        # lee = wind pushes water ONTO this face (wind_from + 180 ~ face direction)
+        wind_to = (wind_dir_deg + 180) % 360
+        # use the reef name to get outline, find bearing from reef centroid to this point
+        place_brg = (math.degrees(math.atan2(c["x"] - c.get("reef_cx", c["x"]),
+                                              c["y"] - c.get("reef_cy", c["y"]))) + 360) % 360
+        # angular difference between wind direction and point's bearing from reef center
+        angle_diff = abs(((wind_to - place_brg) + 180) % 360 - 180)
+        bonus, why = 0.0, []
+        if angle_diff < 60:
+            bonus = 0.15
+            why.append(f"LEE FACE: wind {wind_speed_kn:.0f} kn from {card(wind_dir_deg)}, this face is sheltered (angle {angle_diff:.0f} deg)")
+        elif angle_diff > 120:
+            bonus = -0.1
+            why.append(f"EXPOSED FACE: wind {wind_speed_kn:.0f} kn from {card(wind_dir_deg)}, this face is wind-exposed (angle {angle_diff:.0f} deg)")
+        if geo in ("Sheltered Reef Slope", "Back Reef Slope") and bonus > 0:
+            bonus += 0.05
+            why.append("sheltered geomorphic zone reinforces lee position")
+        return bonus, why
+
+    # ── Step 4: ML catch-data training framework ──
+    @staticmethod
+    def extract_training_features(c, day, hour, cw, ocean_bonus, eddy_bonus, wind_kn=None, wind_dir=None):
+        """Extract feature vector from a scored candidate for XGBoost/LightGBM training.
+        Call this during scoring to build training data. Label = catch outcome (1/0) added by user."""
+        return {
+            "lat": c["lat"], "lon": c["lon"],
+            "depth_lat_m": c.get("depth_lat_m"),
+            "is_pressure_point": 1 if c["kind"] == "pressure_point" else 0,
+            "pp_rank": c.get("pp", {}).get("days", {}).get(day, {}).get("rank", 99),
+            "current_kn": cw[0]["kn"] if cw else 0.0,
+            "current_dir": cw[0]["dir_to"] if cw else 0.0,
+            "tide_hour": hour or 0,
+            "ocean_bonus": ocean_bonus,
+            "eddy_vorticity_bonus": eddy_bonus,
+            "wind_speed_kn": wind_kn or 0.0,
+            "wind_dir_deg": wind_dir or 0.0,
+            "geomorphic_zone": c.get("geo_zone", ""),
+            "bottom_type": ",".join(sorted(c.get("bottom", set()))),
+            "feature_type": c.get("feature", ""),
+            "day_of_year": int(day.split("-")[2]) if day and "-" in str(day) else 0,
+            "month": int(day.split("-")[1]) if day and "-" in str(day) else 0,
+        }
+
+    @staticmethod
+    def train_catch_model(training_csv_path):
+        """Step 4: Train XGBoost model on catch outcome data. Returns fitted model + feature importances.
+        CSV must have columns matching extract_training_features() + 'caught' (0/1 label).
+        Run this offline — not during live scoring."""
+        import pandas as pd
+        try:
+            import xgboost as xgb
+        except ImportError:
+            return None, "xgboost not installed — pip install xgboost"
+        df = pd.read_csv(training_csv_path)
+        feature_cols = ["depth_lat_m", "is_pressure_point", "pp_rank", "current_kn", "current_dir",
+                        "tide_hour", "ocean_bonus", "eddy_vorticity_bonus", "wind_speed_kn", "wind_dir_deg",
+                        "day_of_year", "month"]
+        X = df[feature_cols].fillna(0)
+        y = df["caught"]
+        model = xgb.XGBClassifier(n_estimators=200, max_depth=5, learning_rate=0.1, eval_metric="logloss")
+        model.fit(X, y)
+        importances = dict(zip(feature_cols, model.feature_importances_))
+        return model, importances
+
+    def ml_score_override(self, model, features):
+        """Step 4: If a trained model exists, use it to override the flat pressure point bonus.
+        Returns predicted probability (0-1) that this spot produces a catch."""
+        if model is None:
+            return None
+        import pandas as pd
+        feature_cols = ["depth_lat_m", "is_pressure_point", "pp_rank", "current_kn", "current_dir",
+                        "tide_hour", "ocean_bonus", "eddy_vorticity_bonus", "wind_speed_kn", "wind_dir_deg",
+                        "day_of_year", "month"]
+        row = pd.DataFrame([{k: features.get(k, 0) for k in feature_cols}])
+        return float(model.predict_proba(row)[0][1])
+
     def _tide_phase_at(self, lon, lat, day, hour):
         """Determine tide phase at a location/time by comparing RECOM current speed at adjacent hours.
         Returns 'run-in' (increasing), 'run-out' (decreasing), 'change' (at min/max), or None."""
@@ -676,6 +852,11 @@ class Engine:
             near = c["_near"]
             if near and math.dist(near["xy"], (c["x"], c["y"])) < 1000:
                 bonus += 0.1; why.append(f"within 1 km of pressure point {near['props']['id']}")
+        # Step 1: vorticity-based eddy detection (demersal benefits from current-lift eddies too)
+        eb, ewhy = self.eddy_score(c["lon"], c["lat"], day, hours)
+        bonus += eb * 0.5  # half weight for demersal (depth is primary, eddy is secondary)
+        if ewhy:
+            why.extend([f"(demersal) {w}" for w in ewhy])
         zf = 1.0
         if sp["zones"] == {"inshore"} and c["lon"] > 145.85:
             zf = 0.5; why.append("inshore species on a mid-shelf reef (lower likelihood)")
@@ -690,8 +871,9 @@ class Engine:
         if cl: why.append(closed_label(cl))
         return round(s, 3), why, dict(current=cw, closed=cl, sweet=sweet, species_type="demersal", deep=is_deep(dl))
 
-    def score_pelagic(self, sp, c, day, hours=None, current_override=None):
-        """Pelagic engine: judged on water features (colour lines, SST breaks, upwellings, eddies), not depth."""
+    def score_pelagic(self, sp, c, day, hours=None, current_override=None, wind_speed_kn=None, wind_dir_deg=None):
+        """Pelagic engine: judged on water features (colour lines, SST breaks, upwellings, eddies), not depth.
+        Now includes: Step 1 (eddy detection), Step 2 (productivity index)."""
         dl = c["depth_lat_m"]
         if dl > CUTOFF_LAT_M:
             return 0.0, ["deeper than 150 m LAT - dropped"], {}
@@ -714,16 +896,27 @@ class Engine:
         ob, owhy = self.ocean_score(c["lon"], c["lat"])
         bonus += ob
         why.extend(owhy)
+        # Step 1: eddy detection from vorticity
+        eb, ewhy = self.eddy_score(c["lon"], c["lat"], day, hours)
+        bonus += eb; why.extend(ewhy)
+        # Step 2: combined productivity index
+        cb, creason, csignals = self.productivity_index(c, day, hours)
+        bonus += cb
+        if creason:
+            why.append(creason)
         fb, fw = self.feeding_bonus(sp, c, day, cw[1] if cw else None)
         bonus += fb; why.extend(fw)
         zf = 1.0
         s = (1.0 * sf * cf * zf + bonus) * sp["season"]
         cl = closed_on(sp["id"], day)
         if cl: why.append(closed_label(cl))
-        return round(s, 3), why, dict(current=cw, closed=cl, sweet=False, species_type="pelagic", deep=is_deep(dl))
+        return round(s, 3), why, dict(current=cw, closed=cl, sweet=False, species_type="pelagic", deep=is_deep(dl),
+                                       vorticity_bonus=eb, convergence_bonus=cb, convergence_signals=csignals)
 
-    def score_ambush(self, sp, c, day, hours=None, current_override=None):
-        """Ambush Points engine: hourly tide/current on reef faces, corners, lee eddies."""
+    def score_ambush(self, sp, c, day, hours=None, current_override=None, wind_speed_kn=None, wind_dir_deg=None):
+        """Ambush Points engine: hourly tide/current on reef faces, corners, lee eddies.
+        Now includes: Step 1 (vorticity/eddy detection), Step 2 (productivity index),
+        Step 3 (wind-modified pressure point ranking)."""
         dl = c["depth_lat_m"]
         if dl > CUTOFF_LAT_M:
             return 0.0, ["deeper than 150 m LAT - dropped"], {}
@@ -753,23 +946,38 @@ class Engine:
                 bonus += 0.15; why.append(f"within 1 km of pressure point {near['props']['id']} (ambush zone)")
         # reef face / corner / lee eddy classification
         geo = self.zone_at(c["x"], c["y"])
+        c["geo_zone"] = geo
         if geo:
             why.append(f"geomorphic zone: {geo}")
             if geo in ("Reef Slope", "Sheltered Reef Slope", "Reef Crest", "Back Reef Slope"):
                 bonus += 0.1; why.append("reef face/slope (ambush position)")
+        # Step 1: vorticity-based lee eddy detection
+        eb, ewhy = self.eddy_score(c["lon"], c["lat"], day, hours)
+        bonus += eb; why.extend(ewhy)
+        # Step 2: combined productivity index (convergence zone scoring)
+        cb, creason, csignals = self.productivity_index(c, day, hours)
+        bonus += cb
+        if creason:
+            why.append(creason)
+        # Step 3: wind-modified pressure point ranking
+        wb, wwhy = self.wind_modified_pp_rank(c, wind_speed_kn, wind_dir_deg)
+        bonus += wb; why.extend(wwhy)
         fb, fw = self.feeding_bonus(sp, c, day, cw[1] if cw else None)
         bonus += fb; why.extend(fw)
         s = (cf + bonus) * sp.get("season", 1.0)
         cl = closed_on(sp["id"], day)
         if cl: why.append(closed_label(cl))
-        return round(s, 3), why, dict(current=cw, closed=cl, sweet=False, species_type="ambush", deep=is_deep(dl))
+        return round(s, 3), why, dict(current=cw, closed=cl, sweet=False, species_type="ambush", deep=is_deep(dl),
+                                       vorticity_bonus=eb, convergence_bonus=cb, convergence_signals=csignals,
+                                       wind_bonus=wb, model_res=CURRENT_MODEL_RES)
 
-    def score(self, sp, c, day, hours=None, current_override=None):
-        """Dispatch to the right engine. Returns (score, reasons, details)."""
+    def score(self, sp, c, day, hours=None, current_override=None, wind_speed_kn=None, wind_dir_deg=None):
+        """Dispatch to the right engine. Returns (score, reasons, details).
+        wind_speed_kn/wind_dir_deg: live wind for Step 3 (lee face reranking)."""
         if c["kind"] == "pressure_point":
-            return self.score_ambush(sp, c, day, hours, current_override)
+            return self.score_ambush(sp, c, day, hours, current_override, wind_speed_kn, wind_dir_deg)
         if sp["group"] == "PELAGIC":
-            return self.score_pelagic(sp, c, day, hours, current_override)
+            return self.score_pelagic(sp, c, day, hours, current_override, wind_speed_kn, wind_dir_deg)
         return self.score_demersal(sp, c, day, hours, current_override)
 
     def answer_sources(self, sid, sc, pick, day=None, top=3):
@@ -806,10 +1014,10 @@ class Engine:
         lines = [f"- {h['dataset']}" + (f" ({h['rows_in_area']:,} rows here)" if h.get("rows_in_area") else "") + f": {h['reason']}" for h in hb]
         return ["Held but not used:"] + (lines[:limit] if limit else lines) + ([f"- ... and {len(lines) - limit} more"] if limit and len(lines) > limit else [])
 
-    def rank(self, sid, cands, day, top=3, min_sep_m=500, hours=None):
+    def rank(self, sid, cands, day, top=3, min_sep_m=500, hours=None, wind_speed_kn=None, wind_dir_deg=None):
         sp = self.species[sid]; sc = []
         for c in cands:
-            s, why, det = self.score(sp, c, day, hours=hours)
+            s, why, det = self.score(sp, c, day, hours=hours, wind_speed_kn=wind_speed_kn, wind_dir_deg=wind_dir_deg)
             if s > 0:
                 sc.append((s, c, why, det))
         if sp["group"] == "PELAGIC":  # 21 Nov 7:32 pm: no depth-based ranking for pelagics
@@ -854,9 +1062,9 @@ class Engine:
                     f"structure fits the criteria. Here's a mark: {lat_s}, {lon_s}.")
         return line
 
-    def rank_with_marks(self, sid, cands, day, top=3, min_sep_m=500, hours=None):
+    def rank_with_marks(self, sid, cands, day, top=3, min_sep_m=500, hours=None, wind_speed_kn=None, wind_dir_deg=None):
         """Rank candidates and produce plain-language mark descriptions."""
-        sc, pick = self.rank(sid, cands, day, top=top, min_sep_m=min_sep_m, hours=hours)
+        sc, pick = self.rank(sid, cands, day, top=top, min_sep_m=min_sep_m, hours=hours, wind_speed_kn=wind_speed_kn, wind_dir_deg=wind_dir_deg)
         sp = self.species[sid]
         marks = []
         for s, c, why, det in pick:
