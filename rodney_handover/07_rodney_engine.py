@@ -433,6 +433,11 @@ class Engine:
             if dl <= 0:
                 stats["dries"] += 1; continue
             c.update(depth_lat_m=dl, depth_tag=tag, depth_src=src, deep=is_deep(dl), depth_label=depth_label(dl))
+            # populate reef centroid for wind lee-face calculation (Step 3)
+            from shapely.geometry import Point as _Pt
+            ni = self.name_tree.nearest(_Pt(c["x"], c["y"]))
+            rc = self.names.geometry[ni].centroid
+            c["reef_cx"] = rc.x; c["reef_cy"] = rc.y
             out.append(c)
         stats["legal_candidates"] = len(out)
         # G12: remember what data the engine holds inside this answer area, so the answer can list what it held but didn't use
@@ -492,9 +497,15 @@ class Engine:
 
     def eddy_score(self, lon, lat, day, hours):
         """Step 1: Score lee eddy strength at a point using vorticity across tide hours.
-        Returns (bonus, reasons). High vorticity = fish-holding lee eddy."""
+        Returns (bonus, reasons). High vorticity = fish-holding lee eddy.
+        Cached by grid cell (~500m) + day to avoid redundant RECOM evaluations."""
         if not hours:
             hours = list(range(5, 19))
+        cache_key = (round(lon / 0.005), round(lat / 0.005), day, tuple(sorted(hours)))
+        if not hasattr(self, "_eddy_cache"):
+            self._eddy_cache = {}
+        if cache_key in self._eddy_cache:
+            return self._eddy_cache[cache_key]
         best_vort = 0.0
         best_hour = None
         for h in hours:
@@ -509,12 +520,14 @@ class Engine:
         elif best_vort > VORTICITY_THRESHOLD_MOD:
             bonus = 0.1
             why.append(f"moderate recirculation (vorticity {best_vort:.5f} rad/s at {best_hour:02d}:00)")
+        self._eddy_cache[cache_key] = (bonus, why)
         return bonus, why
 
     # ── Step 2: Combined productivity index ──
-    def productivity_index(self, c, day, hours=None):
+    def productivity_index(self, c, day, hours=None, eddy_bonus=None):
         """Convergence zone scoring: pressure point + upwelling + SST front scored multiplicatively.
-        A pressure point WITH an upwelling signal AND a colour line is vastly more productive than any alone."""
+        A pressure point WITH an upwelling signal AND a colour line is vastly more productive than any alone.
+        eddy_bonus: pre-computed eddy bonus from eddy_score() — avoids double-counting vorticity."""
         signals = {}
         # pressure point signal
         pp_signal = 0.0
@@ -529,9 +542,10 @@ class Engine:
         # ocean feature signals
         ob, _ = self.ocean_score(c["lon"], c["lat"])
         signals["ocean_features"] = min(ob / 0.55, 1.0)  # normalise to 0-1 (max ocean_score ~0.55)
-        # eddy signal
-        eb, _ = self.eddy_score(c["lon"], c["lat"], day, hours)
-        signals["eddy"] = min(eb / 0.2, 1.0)
+        # eddy signal — use pre-computed value to avoid calling eddy_score() again
+        if eddy_bonus is None:
+            eddy_bonus, _ = self.eddy_score(c["lon"], c["lat"], day, hours)
+        signals["eddy"] = min(eddy_bonus / 0.2, 1.0) if eddy_bonus > 0 else 0.0
         # convergence: count how many signals are active (>0.3)
         active = sum(1 for v in signals.values() if v > 0.3)
         if active >= 3:
@@ -557,12 +571,8 @@ class Engine:
         geo = self.zone_at(c["x"], c["y"])
         if not geo:
             return 0.0, []
-        # get current direction at this point (which way the structure faces the flow)
-        cur = self.cur(c["lon"], c["lat"], None, 0) if hasattr(self, 'cur') else None
-        # compute whether this point is on the lee side of its reef relative to wind
-        # lee = wind pushes water ONTO this face (wind_from + 180 ~ face direction)
         wind_to = (wind_dir_deg + 180) % 360
-        # use the reef name to get outline, find bearing from reef centroid to this point
+        # bearing from nearest reef centroid to this point (populated in candidates())
         place_brg = (math.degrees(math.atan2(c["x"] - c.get("reef_cx", c["x"]),
                                               c["y"] - c.get("reef_cy", c["y"]))) + 360) % 360
         # angular difference between wind direction and point's bearing from reef center
@@ -584,6 +594,8 @@ class Engine:
     def extract_training_features(c, day, hour, cw, ocean_bonus, eddy_bonus, wind_kn=None, wind_dir=None):
         """Extract feature vector from a scored candidate for XGBoost/LightGBM training.
         Call this during scoring to build training data. Label = catch outcome (1/0) added by user."""
+        geo = c.get("geo_zone", "")
+        bottom = c.get("bottom", set())
         return {
             "lat": c["lat"], "lon": c["lon"],
             "depth_lat_m": c.get("depth_lat_m"),
@@ -596,9 +608,11 @@ class Engine:
             "eddy_vorticity_bonus": eddy_bonus,
             "wind_speed_kn": wind_kn or 0.0,
             "wind_dir_deg": wind_dir or 0.0,
-            "geomorphic_zone": c.get("geo_zone", ""),
-            "bottom_type": ",".join(sorted(c.get("bottom", set()))),
-            "feature_type": c.get("feature", ""),
+            "is_reef_slope": 1 if geo in ("Reef Slope", "Sheltered Reef Slope", "Back Reef Slope") else 0,
+            "is_reef_flat": 1 if geo in ("Inner Reef Flat", "Outer Reef Flat", "Reef Crest") else 0,
+            "has_hard_bottom": 1 if "hard" in bottom else 0,
+            "has_coral": 1 if "coral" in bottom else 0,
+            "has_rubble": 1 if "rubble" in bottom else 0,
             "day_of_year": int(day.split("-")[2]) if day and "-" in str(day) else 0,
             "month": int(day.split("-")[1]) if day and "-" in str(day) else 0,
         }
@@ -616,6 +630,7 @@ class Engine:
         df = pd.read_csv(training_csv_path)
         feature_cols = ["depth_lat_m", "is_pressure_point", "pp_rank", "current_kn", "current_dir",
                         "tide_hour", "ocean_bonus", "eddy_vorticity_bonus", "wind_speed_kn", "wind_dir_deg",
+                        "is_reef_slope", "is_reef_flat", "has_hard_bottom", "has_coral", "has_rubble",
                         "day_of_year", "month"]
         X = df[feature_cols].fillna(0)
         y = df["caught"]
@@ -632,6 +647,7 @@ class Engine:
         import pandas as pd
         feature_cols = ["depth_lat_m", "is_pressure_point", "pp_rank", "current_kn", "current_dir",
                         "tide_hour", "ocean_bonus", "eddy_vorticity_bonus", "wind_speed_kn", "wind_dir_deg",
+                        "is_reef_slope", "is_reef_flat", "has_hard_bottom", "has_coral", "has_rubble",
                         "day_of_year", "month"]
         row = pd.DataFrame([{k: features.get(k, 0) for k in feature_cols}])
         return float(model.predict_proba(row)[0][1])
@@ -871,7 +887,7 @@ class Engine:
         if cl: why.append(closed_label(cl))
         return round(s, 3), why, dict(current=cw, closed=cl, sweet=sweet, species_type="demersal", deep=is_deep(dl))
 
-    def score_pelagic(self, sp, c, day, hours=None, current_override=None, wind_speed_kn=None, wind_dir_deg=None):
+    def score_pelagic(self, sp, c, day, hours=None, current_override=None):
         """Pelagic engine: judged on water features (colour lines, SST breaks, upwellings, eddies), not depth.
         Now includes: Step 1 (eddy detection), Step 2 (productivity index)."""
         dl = c["depth_lat_m"]
@@ -899,8 +915,8 @@ class Engine:
         # Step 1: eddy detection from vorticity
         eb, ewhy = self.eddy_score(c["lon"], c["lat"], day, hours)
         bonus += eb; why.extend(ewhy)
-        # Step 2: combined productivity index
-        cb, creason, csignals = self.productivity_index(c, day, hours)
+        # Step 2: combined productivity index (pass eddy_bonus to avoid double-counting vorticity)
+        cb, creason, csignals = self.productivity_index(c, day, hours, eddy_bonus=eb)
         bonus += cb
         if creason:
             why.append(creason)
@@ -954,8 +970,8 @@ class Engine:
         # Step 1: vorticity-based lee eddy detection
         eb, ewhy = self.eddy_score(c["lon"], c["lat"], day, hours)
         bonus += eb; why.extend(ewhy)
-        # Step 2: combined productivity index (convergence zone scoring)
-        cb, creason, csignals = self.productivity_index(c, day, hours)
+        # Step 2: combined productivity index (pass eddy_bonus to avoid double-counting vorticity)
+        cb, creason, csignals = self.productivity_index(c, day, hours, eddy_bonus=eb)
         bonus += cb
         if creason:
             why.append(creason)
@@ -977,7 +993,7 @@ class Engine:
         if c["kind"] == "pressure_point":
             return self.score_ambush(sp, c, day, hours, current_override, wind_speed_kn, wind_dir_deg)
         if sp["group"] == "PELAGIC":
-            return self.score_pelagic(sp, c, day, hours, current_override, wind_speed_kn, wind_dir_deg)
+            return self.score_pelagic(sp, c, day, hours, current_override)
         return self.score_demersal(sp, c, day, hours, current_override)
 
     def answer_sources(self, sid, sc, pick, day=None, top=3):
