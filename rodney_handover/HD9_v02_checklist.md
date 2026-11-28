@@ -2,6 +2,20 @@
 
 Built from: carry-over audit (26 must-carry), features register (87 items, 20 LOST + 9 NEVER), Mick's 16-line checklist, and delivery plan gates G1-G9.
 
+## HD9 v02 map features restored (from HD9 v01 base)
+
+| Done | Item | What changed in HD9_v02.html |
+|------|------|------------------------------|
+| YES | MC2 Live pointer readout | mousemove handler with throttle, shows GPS + depth as cursor moves |
+| YES | MC10 Marks search | Search box top-left, type-to-filter marks by name/id/species/reef, click to zoom |
+| YES | MC11 Species picker mode | ALL / DEMERSAL / PELAGIC tab switch above species checkboxes |
+| YES | MC12 GPX export | Export button downloads visible marks as GPX file |
+| YES | MC13 Satellite photo toggle | Esri World Imagery tile layer, checkbox in top bar |
+| YES | MC19 Zoning outlines toggle | GBRMPA zones scaffold (needs ZONING_LAYER GeoJSON), off by default |
+| YES | MC15 Survey coverage footprint | 8 source datasets from v4 priority map, measured vs modelled legend, per-source toggles, source shown in depth readout |
+| — | MC1 Four-corner layout | Partial — search box positioned, readout still BL, needs full layout rework |
+| — | MC18 Hardness click-to-read | Needs hardness tile sidecar (same approach as depth tiles) |
+
 ## Engine changes done in this session (outcomes a-d)
 
 | Done | Outcome | What changed |
